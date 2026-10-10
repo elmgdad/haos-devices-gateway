@@ -504,6 +504,12 @@ function TuyaLogin({ config, onDone }: { config: TuyaConfig; onDone: () => void 
             void submit()
           }}
         >
+          {config.source === "app" && (
+            <p className="text-sm text-muted">
+              These values come from the Device Hub app configuration. Change them there, then Home Assistant restarts this
+              app and signs in again.
+            </p>
+          )}
           <Field label="Access ID / Client ID">
             <Input value={accessId} onChange={(e) => setAccessId(e.target.value)} className="font-mono" autoComplete="off" required />
           </Field>
@@ -540,7 +546,10 @@ function TuyaLogin({ config, onDone }: { config: TuyaConfig; onDone: () => void 
             Under Devices, Link App Account, scan the QR code with the Smart Life app so your devices and their local keys
             appear here.
           </li>
-          <li>The secret is stored only in this app's private storage on your Home Assistant.</li>
+          <li>
+            Paste them into Settings, Apps, Device Hub, Configuration. Saving restarts this app and signs in. You can also
+            connect from the form on the left.
+          </li>
         </ol>
       </Panel>
     </div>

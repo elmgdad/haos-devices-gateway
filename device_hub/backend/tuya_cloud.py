@@ -44,14 +44,7 @@ class TuyaCloud:
         self.devices = []
         self.fetched_at = 0
         self.error = None
-        creds = store.load("tuya") or {}
-        if not creds and os.environ.get("TUYA_CLIENT_ID") and not store.ADDON:
-            creds = {
-                "access_id": os.environ["TUYA_CLIENT_ID"],
-                "secret": os.environ.get("TUYA_SECRET", ""),
-                "region": os.environ.get("TUYA_REGION", "eu"),
-            }
-        self._creds = creds
+        self._creds = _initial_creds()
 
     @property
     def connected(self):
@@ -67,6 +60,7 @@ class TuyaCloud:
             "fetched_at": self.fetched_at,
             "error": self.error,
             "regions": REGIONS,
+            "source": self._creds.get("source") or "",
         }
 
     async def restore(self):
@@ -84,7 +78,7 @@ class TuyaCloud:
             raise RuntimeError("Enter the Access ID and Access Secret from your Tuya IoT project.")
         cloud = await asyncio.to_thread(_open_cloud, access_id, secret, region)
         self._cloud = cloud
-        self._creds = {"access_id": access_id, "secret": secret, "region": region}
+        self._creds = {"access_id": access_id, "secret": secret, "region": region, "source": "panel"}
         store.save("tuya", self._creds)
         self.error = None
         await self.list(refresh=True)
@@ -113,6 +107,26 @@ class TuyaCloud:
 
     def by_id(self, device_id):
         return next((d for d in self.devices if d["id"] == device_id), None)
+
+
+def _initial_creds():
+    saved = store.load("tuya") or {}
+    options = store.addon_options()
+    access_id = str(options.get("tuya_access_id") or "").strip()
+    secret = str(options.get("tuya_access_secret") or "").strip()
+    region = options.get("tuya_region") if options.get("tuya_region") in REGION_IDS else "eu"
+    if access_id and not secret and saved.get("access_id") == access_id:
+        secret = saved.get("secret") or ""
+    if access_id and secret:
+        return {"access_id": access_id, "secret": secret, "region": region, "source": "app"}
+    if not saved and os.environ.get("TUYA_CLIENT_ID") and not store.ADDON:
+        return {
+            "access_id": os.environ["TUYA_CLIENT_ID"],
+            "secret": os.environ.get("TUYA_SECRET", ""),
+            "region": os.environ.get("TUYA_REGION", "eu"),
+            "source": "env",
+        }
+    return saved
 
 
 def _open_cloud(access_id, secret, region):

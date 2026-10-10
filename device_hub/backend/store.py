@@ -38,3 +38,15 @@ def remove(name):
 
 def settings():
     return {"z2m_base_topic": "zigbee2mqtt", "default_cidr": "", **(load("settings", {}) or {})}
+
+
+def addon_options():
+    """Values from the Home Assistant app configuration page (/data/options.json)."""
+    path = DATA_DIR / "options.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}

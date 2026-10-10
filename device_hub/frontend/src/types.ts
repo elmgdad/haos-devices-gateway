@@ -95,6 +95,7 @@ export interface TuyaConfig {
   fetched_at: number
   error: string | null
   regions: Region[]
+  source: string
 }
 
 export interface Gateway {
@@ -275,5 +276,6 @@ export interface Area {
 
 export interface Settings {
   z2m_base_topic: string
+  z2m_topic_discovered: boolean
   default_cidr: string
 }

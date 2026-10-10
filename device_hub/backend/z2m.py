@@ -44,7 +44,30 @@ class Z2M:
             self.availability, self.telemetry = {}, {}
             asyncio.create_task(self.subscribe())
 
+    async def discovered_topic(self):
+        """mqtt.base_topic from the Zigbee2MQTT app, when that app is installed."""
+        try:
+            data = await self.ha.supervisor("GET", "/addons")
+        except HAError:
+            return None
+        candidates = [a for a in data.get("addons", []) if a.get("slug", "").endswith(("zigbee2mqtt", "zigbee2mqtt_edge"))]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda a: a.get("state") != "started")
+        try:
+            info = await self.ha.supervisor("GET", f"/addons/{candidates[0]['slug']}/info")
+        except HAError:
+            return None
+        mqtt = (info.get("options") or {}).get("mqtt") or {}
+        if not isinstance(mqtt, dict):
+            return None
+        topic = str(mqtt.get("base_topic") or "").strip().strip("/")
+        return topic or None
+
     async def subscribe(self):
+        discovered = await self.discovered_topic()
+        if discovered:
+            self.base = discovered
         base = self.base
         topics = [
             f"{base}/bridge/state",

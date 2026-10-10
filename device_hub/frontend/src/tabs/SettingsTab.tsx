@@ -64,8 +64,21 @@ export default function SettingsTab({ status, onChanged }: { status: Status | nu
             void save()
           }}
         >
-          <Field label="Zigbee2MQTT base topic" hint="Matches mqtt.base_topic in Zigbee2MQTT's configuration.">
-            <Input value={topic} onChange={(e) => setTopic(e.target.value)} className="font-mono" placeholder="zigbee2mqtt" />
+          <Field
+            label="Zigbee2MQTT base topic"
+            hint={
+              settings.data?.z2m_topic_discovered
+                ? "Read from the Zigbee2MQTT app."
+                : "Used only when Zigbee2MQTT is not installed. Otherwise Device Hub reads mqtt.base_topic from that app."
+            }
+          >
+            <Input
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              className="font-mono"
+              placeholder="zigbee2mqtt"
+              disabled={settings.data?.z2m_topic_discovered}
+            />
           </Field>
           <Field label="Default network to scan" hint="Used by Find on network on the Tuya tab.">
             <Select value={cidr} onChange={(e) => setCidr(e.target.value)}>
@@ -91,12 +104,19 @@ export default function SettingsTab({ status, onChanged }: { status: Status | nu
                 Signed in with <span className="font-mono">{tuya.data.config.access_id}</span> in the{" "}
                 <b>{tuya.data.config.region}</b> data center. {tuya.data.config.device_count} devices.
               </p>
-              <Button variant="danger" busy={busy === "signout"} onClick={signOut}>
-                Sign out
-              </Button>
+              {tuya.data.config.source === "app" ? (
+                <p className="text-muted">Taken from the Device Hub app configuration.</p>
+              ) : (
+                <Button variant="danger" busy={busy === "signout"} onClick={signOut}>
+                  Sign out
+                </Button>
+              )}
             </>
           ) : (
-            <p className="text-muted">Not signed in. Use the Tuya cloud tab to connect your project.</p>
+            <p className="text-muted">
+              Not signed in. Set the Access ID, Access Secret and data center in the Device Hub app configuration. Home
+              Assistant restarts the app and signs in.
+            </p>
           )}
         </div>
       </Panel>

@@ -1,0 +1,13 @@
+---
+configuration:
+  tuya_access_id:
+    name: Tuya Access ID
+    description: Access ID / Client ID from the Tuya IoT project (iot.tuya.com, Cloud, Development).
+  tuya_access_secret:
+    name: Tuya Access Secret
+    description: Access Secret from the same project. Home Assistant stores it with this app and does not show it again.
+  tuya_region:
+    name: Tuya data center
+    description: >-
+      The data center chosen for that project. eu Central Europe, eu-w Western Europe,
+      us Western America, us-e Eastern America, in India, sg Singapore, cn China.

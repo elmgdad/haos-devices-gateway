@@ -324,6 +324,15 @@ class Hub:
         }
 
 
+async def _settings_view(hub: Hub):
+    current = store.settings()
+    discovered = await hub.z2m.discovered_topic()
+    if discovered:
+        current["z2m_base_topic"] = discovered
+    current["z2m_topic_discovered"] = bool(discovered)
+    return current
+
+
 def routes(hub: Hub):
     r = web.RouteTableDef()
 
@@ -338,18 +347,20 @@ def routes(hub: Hub):
 
     @r.get("/api/settings")
     async def get_settings(_request):
-        return web.json_response(store.settings())
+        return web.json_response(await _settings_view(hub))
 
     @r.post("/api/settings")
     async def set_settings(request):
         data = await body(request)
         current = store.settings()
-        for key in ("z2m_base_topic", "default_cidr"):
-            if key in data:
-                current[key] = str(data[key] or "").strip()
+        discovered = await hub.z2m.discovered_topic()
+        if "default_cidr" in data:
+            current["default_cidr"] = str(data["default_cidr"] or "").strip()
+        if not discovered and "z2m_base_topic" in data:
+            current["z2m_base_topic"] = str(data["z2m_base_topic"] or "").strip()
         store.save("settings", current)
-        hub.z2m.set_base(current["z2m_base_topic"] or "zigbee2mqtt")
-        return web.json_response(current)
+        hub.z2m.set_base(discovered or current["z2m_base_topic"] or "zigbee2mqtt")
+        return web.json_response(await _settings_view(hub))
 
     @r.get("/api/areas")
     async def areas(_request):
