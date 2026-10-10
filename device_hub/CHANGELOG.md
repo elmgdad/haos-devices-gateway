@@ -1,3 +1,7 @@
+# 0.1.19
+
+Reset, limit and calibration controls are no longer listed with a shared device's main controls.
+
 # 0.1.18
 
 Shared controls without their own name are labeled by what they are, such as Cover or Door.

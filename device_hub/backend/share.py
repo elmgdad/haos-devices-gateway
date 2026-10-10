@@ -20,6 +20,7 @@ WRITABLE = {
     "input_number", "input_select", "button", "climate", "humidifier", "valve", "siren",
 }
 TRUTHY = {True, 1, "1", "true", "True", "on", "ON", "open", "unlock"}
+RISKY = ("reset", "factory", "limit", "calibrat", "identify", "restart", "reboot")
 
 
 class Shares:
@@ -223,6 +224,9 @@ a {{ color: #8ec8ff; }}
             if row["key"].startswith("lan:"):
                 continue
             controls = self._controls(row, index)
+            for control in controls:
+                if any(word in control["name"].lower() for word in RISKY):
+                    control["primary"] = False
             if not controls:
                 continue
             items.append({
