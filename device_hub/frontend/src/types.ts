@@ -58,9 +58,38 @@ export interface TuyaControl {
   id: string
   name: string
   online: boolean | null
+  via?: "local" | "cloud"
   status: TuyaStatusItem[]
   functions: TuyaFunction[]
   blocked?: string | null
+}
+
+export interface LocalLink {
+  id: string
+  name: string
+  ip: string
+  version: string
+  state: "connecting" | "online" | "offline"
+  error: string | null
+  last_seen: number | null
+  entities: number
+  saved_at: number | null
+  ha_device_id?: string | null
+}
+
+export interface LocalSaveResult {
+  id: string
+  name: string
+  ok: boolean
+  reason: string | null
+  entities?: number
+}
+
+export interface LocalOverview {
+  mqtt: { state: "connected" | "connecting" | "off"; error: string | null; host: string | null }
+  devices: LocalLink[]
+  last_results: LocalSaveResult[]
+  results?: LocalSaveResult[]
 }
 
 export interface TuyaDevice {
@@ -85,6 +114,7 @@ export interface TuyaDevice {
   protocol: string | null
   seen_at: number | null
   tuya_local: TuyaLocalLink | null
+  local: LocalLink | null
   drift: ("key" | "ip")[]
 }
 

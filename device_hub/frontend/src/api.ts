@@ -2,6 +2,7 @@ import type {
   AddStart,
   Area,
   HotspotStatus,
+  LocalOverview,
   Network,
   ScanStatus,
   Settings,
@@ -48,6 +49,9 @@ export const api = {
   tuyaControl: (id: string) => get<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/control`),
   tuyaCommand: (id: string, code: string, value: boolean | number | string) =>
     post<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/commands`, { commands: [{ code, value }] }),
+  local: () => get<LocalOverview>("/local"),
+  saveLocal: (ids: string[] = []) => post<LocalOverview>("/local/save", { ids }),
+  forgetLocal: (id: string) => del<LocalOverview>(`/local/${encodeURIComponent(id)}`),
 
   addStart: (body: {
     device_id: string

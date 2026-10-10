@@ -1,8 +1,28 @@
-import { Plus, Radar, RefreshCw, RotateCw, SlidersHorizontal, Trash2, Wrench } from "lucide-react"
+import {
+  ExternalLink,
+  HardDriveDownload,
+  Plus,
+  Radar,
+  RefreshCw,
+  RotateCw,
+  SlidersHorizontal,
+  Trash2,
+  Unplug,
+  Wrench,
+} from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { api } from "../api"
 import { cx, errorText, openInHa, sourceColor, timeAgo, usePoll } from "../lib"
-import type { TuyaConfig, TuyaControl, TuyaDevice, TuyaFunction, TuyaLocalEntry } from "../types"
+import type {
+  LocalLink,
+  LocalOverview,
+  LocalSaveResult,
+  TuyaConfig,
+  TuyaControl,
+  TuyaDevice,
+  TuyaFunction,
+  TuyaLocalEntry,
+} from "../types"
 import {
   Badge,
   Button,
@@ -44,6 +64,13 @@ function LocalStatus({ device }: { device: TuyaDevice }) {
   if (device.drift.includes("ip")) return <Badge tone="bad">IP changed to {device.lan_ip}</Badge>
   if (link.state !== "loaded") return <Badge tone="bad">Not loaded</Badge>
   return <Badge tone="ok">In Tuya Local</Badge>
+}
+
+function LocalBadge({ link }: { link: LocalLink | null }) {
+  if (!link) return <Badge>Not saved</Badge>
+  if (link.state === "online") return <Badge tone="ok">Local · live</Badge>
+  if (link.state === "connecting") return <Badge tone="info">Connecting</Badge>
+  return <Badge tone="bad">Local · offline</Badge>
 }
 
 export async function findTuyaOnLan() {
@@ -209,6 +236,8 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
         </Notice>
       )}
 
+      <LocalPanel devices={data.devices} onChanged={() => refresh()} />
+
       <Panel
         title={
           <span className="flex items-center gap-2">
@@ -268,7 +297,7 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
           </Empty>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[980px] border-collapse text-sm">
+            <table className="w-full min-w-[1100px] border-collapse text-sm">
               <thead>
                 <tr>
                   <Th className="w-10">
@@ -284,6 +313,7 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
                   <Th>Local key</Th>
                   <Th>Cloud</Th>
                   <Th>Tuya Local</Th>
+                  <Th>Home Assistant</Th>
                   <Th className="text-right">Actions</Th>
                 </tr>
               </thead>
@@ -336,6 +366,9 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
                       {device.tuya_local && device.tuya_local.title !== device.name && (
                         <div className="mt-0.5 text-xs text-muted">as {device.tuya_local.title}</div>
                       )}
+                    </Td>
+                    <Td>
+                      <LocalBadge link={device.local} />
                     </Td>
                     <Td className="text-right">
                       <div className="inline-flex gap-1.5">
@@ -405,7 +438,7 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
         />
       )}
 
-      <ControlDialog device={controlling} onClose={() => setControlling(null)} />
+      <ControlDialog device={controlling} onClose={() => setControlling(null)} onSaved={() => refresh()} />
       <AddDialog target={adding} gateways={data.gateways} onClose={() => setAdding(null)} onAdded={() => refresh()} />
       <BulkAddDialog
         devices={bulk}
@@ -441,18 +474,21 @@ function showDp(value: boolean | number | string | null) {
   return String(value)
 }
 
-function ControlDialog({ device, onClose }: { device: TuyaDevice | null; onClose: () => void }) {
+function ControlDialog({ device, onClose, onSaved }: { device: TuyaDevice | null; onClose: () => void; onSaved: () => void }) {
   const feedback = useFeedback()
   const [detail, setDetail] = useState<TuyaControl | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
+  const [reloads, setReloads] = useState(0)
+  const [savedHere, setSavedHere] = useState(false)
 
   useEffect(() => {
     if (!device) {
       setDetail(null)
       setError(null)
+      setSavedHere(false)
       return
     }
     let cancelled = false
@@ -479,7 +515,29 @@ function ControlDialog({ device, onClose }: { device: TuyaDevice | null; onClose
     return () => {
       cancelled = true
     }
-  }, [device])
+  }, [device, reloads])
+
+  const saveLocal = async () => {
+    if (!device) return
+    setBusy("save")
+    setError(null)
+    try {
+      const result = await api.saveLocal([device.id])
+      const outcome = result.results?.find((item) => item.id === device.id)
+      if (!outcome?.ok) throw new Error(outcome?.reason || "Device Hub could not save this device.")
+      setSavedHere(true)
+      feedback.ok(`Saved ${device.name}. ${outcome.entities} entities are in Home Assistant.`)
+      setReloads((n) => n + 1)
+      onSaved()
+    } catch (exc) {
+      setError(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const saved = Boolean(device?.local) || savedHere || detail?.via === "local"
+  const canSave = Boolean(device?.lan_ip) && !device?.child
 
   const send = async (code: string, value: boolean | number | string) => {
     if (!device) return
@@ -506,14 +564,32 @@ function ControlDialog({ device, onClose }: { device: TuyaDevice | null; onClose
   const statusOf = (code: string) => detail?.status.find((item) => item.code === code)?.value
 
   return (
-    <Modal open={device !== null} title={device ? `Control ${device.name}` : "Control"} onClose={onClose} wide>
-      {loading && <p className="text-sm text-muted">Reading the device from Tuya…</p>}
+    <Modal
+      open={device !== null}
+      title={device ? `Control ${device.name}` : "Control"}
+      onClose={onClose}
+      wide
+      footer={
+        canSave &&
+        (saved ? (
+          <span className="mr-auto self-center text-sm text-muted">Saved for Home Assistant. It runs on your network.</span>
+        ) : (
+          <Button variant="primary" icon={<HardDriveDownload className="size-4" />} busy={busy === "save"} onClick={saveLocal}>
+            Save for Home Assistant
+          </Button>
+        ))
+      }
+    >
+      {loading && <p className="text-sm text-muted">Reading the device…</p>}
       {error && <p className="mb-3 rounded-md bg-bad/10 px-3 py-2 text-sm text-bad">{error}</p>}
       {detail && (
         <div className="space-y-4">
           <p className="flex items-center gap-2 text-sm text-muted">
             <Led state={detail.online ? "ok" : "off"} />
-            {detail.online ? "Online" : "Offline"}. Commands go through the Tuya cloud API.
+            {detail.online ? "Online" : "Offline"}.{" "}
+            {detail.via === "local"
+              ? `Live over your network at ${device?.local?.ip ?? device?.lan_ip ?? "its LAN address"} with the local key.`
+              : "Commands go through the Tuya cloud API."}
           </p>
           {detail.blocked && <p className="rounded-md bg-sunk px-3 py-2 text-sm text-ink">{detail.blocked}</p>}
           {detail.status.length > 0 && (
@@ -580,6 +656,204 @@ function ControlDialog({ device, onClose }: { device: TuyaDevice | null; onClose
         </div>
       )}
     </Modal>
+  )
+}
+
+function MqttBadge({ mqtt }: { mqtt: LocalOverview["mqtt"] | undefined }) {
+  if (!mqtt) return null
+  if (mqtt.state === "connected") return <Badge tone="ok">MQTT connected</Badge>
+  if (mqtt.state === "connecting") return <Badge tone="info">MQTT connecting</Badge>
+  return <Badge tone="bad">MQTT off</Badge>
+}
+
+function LinkState({ link }: { link: LocalLink }) {
+  if (link.state === "online") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs">
+        <Led state="ok" />
+        Live · {timeAgo(link.last_seen)}
+      </span>
+    )
+  }
+  if (link.state === "connecting") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs">
+        <Led state="busy" />
+        Connecting
+      </span>
+    )
+  }
+  return (
+    <span className="text-xs">
+      <span className="inline-flex items-center gap-1.5">
+        <Led state="warn" />
+        Offline, retrying
+      </span>
+      {link.error && <span className="mt-0.5 block text-muted">{link.error}</span>}
+    </span>
+  )
+}
+
+function LocalPanel({ devices, onChanged }: { devices: TuyaDevice[]; onChanged: () => void }) {
+  const feedback = useFeedback()
+  const view = usePoll(() => api.local(), 5000)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [skipped, setSkipped] = useState<LocalSaveResult[]>([])
+
+  const data = view.data
+  const saved = data?.devices ?? []
+  const savedIds = new Set(saved.map((link) => link.id))
+  const failed = new Set((data?.last_results ?? []).filter((result) => !result.ok).map((result) => result.id))
+  const ready = devices.filter(
+    (d) => d.lan_ip && !d.child && !savedIds.has(d.id) && !failed.has(d.id) && d.tuya_local?.state !== "loaded",
+  )
+  const haDevice = new Map(devices.map((d) => [d.id, d.local?.ha_device_id ?? null]))
+
+  const saveAll = async () => {
+    setBusy("save")
+    try {
+      const result = await api.saveLocal()
+      view.setData(result)
+      const items = result.results ?? []
+      const added = items.filter((item) => item.ok && !item.reason)
+      setSkipped(items.filter((item) => !item.ok))
+      feedback.ok(
+        added.length
+          ? `Saved ${added.length} device${added.length === 1 ? "" : "s"} with ${added.reduce((n, item) => n + (item.entities ?? 0), 0)} entities for Home Assistant.`
+          : "Nothing new to save.",
+      )
+      onChanged()
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const forget = async (link: LocalLink) => {
+    const ok = await feedback.confirm({
+      title: `Forget ${link.name}?`,
+      body: "Device Hub closes its local connection and removes its entities from Home Assistant. The device itself is not changed.",
+      action: "Forget",
+      danger: true,
+    })
+    if (!ok) return
+    setBusy(`forget:${link.id}`)
+    try {
+      view.setData(await api.forgetLocal(link.id))
+      feedback.ok(`Forgot ${link.name}.`)
+      onChanged()
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Panel
+      title={
+        <span className="flex items-center gap-2">
+          Local control
+          <span className="font-sans text-sm font-normal tracking-normal text-muted normal-case">
+            Home Assistant entities on your network, no Tuya cloud
+          </span>
+        </span>
+      }
+      aside={
+        <>
+          <MqttBadge mqtt={data?.mqtt} />
+          <Button
+            variant="primary"
+            icon={<HardDriveDownload className="size-4" />}
+            busy={busy === "save"}
+            disabled={!ready.length}
+            onClick={saveAll}
+          >
+            Save {ready.length || ""} on network
+          </Button>
+        </>
+      }
+    >
+      {data && data.mqtt.state !== "connected" && data.mqtt.error && (
+        <p className="border-b border-line px-4 py-2.5 text-sm text-bad">{data.mqtt.error}</p>
+      )}
+      {skipped.length > 0 && (
+        <div className="border-b border-line px-4 py-3 text-sm">
+          <div className="mb-1 flex items-center justify-between gap-3">
+            <span className="font-medium">Not saved</span>
+            <button className="text-xs text-muted hover:text-ink" onClick={() => setSkipped([])}>
+              Dismiss
+            </button>
+          </div>
+          <ul className="space-y-0.5 text-muted">
+            {skipped.map((item) => (
+              <li key={item.id}>
+                <span className="text-ink">{item.name}</span>: {item.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {saved.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-muted">
+          Saving a device keeps its local key, address and data points in Device Hub. Its switches and sensors then show up
+          in Home Assistant and work over your network, without the Tuya cloud.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] border-collapse text-sm">
+            <thead>
+              <tr>
+                <Th>Device</Th>
+                <Th>Address</Th>
+                <Th>Link</Th>
+                <Th>Entities</Th>
+                <Th className="text-right">Actions</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {saved.map((link) => {
+                const haId = link.ha_device_id ?? haDevice.get(link.id)
+                return (
+                  <tr key={link.id} className="border-t border-line">
+                    <Td>
+                      <div className="font-medium">{link.name}</div>
+                      <div className="font-mono text-[11px] text-muted">{link.id}</div>
+                    </Td>
+                    <Td mono>
+                      {link.ip}
+                      <span className="ml-1.5 text-xs text-muted">v{link.version}</span>
+                    </Td>
+                    <Td>
+                      <LinkState link={link} />
+                    </Td>
+                    <Td mono>{link.entities}</Td>
+                    <Td className="text-right">
+                      <div className="inline-flex gap-1.5">
+                        {haId && (
+                          <Button icon={<ExternalLink className="size-4" />} onClick={() => openInHa(`/config/devices/device/${haId}`)}>
+                            Open in HA
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          aria-label={`Forget ${link.name}`}
+                          title="Forget local control"
+                          busy={busy === `forget:${link.id}`}
+                          onClick={() => forget(link)}
+                          icon={<Unplug className="size-4" />}
+                        />
+                      </div>
+                    </Td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
   )
 }
 

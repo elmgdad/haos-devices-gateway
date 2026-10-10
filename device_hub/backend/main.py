@@ -12,6 +12,7 @@ from . import store
 from .ha import HAError, HomeAssistant
 from .hotspot import Hotspot
 from .scanner import Scanner
+from .tuya_bridge import LocalBridge
 from .tuya_cloud import TuyaCloud
 from .tuya_local import TuyaLocal
 from .z2m import Z2M
@@ -56,6 +57,7 @@ class Hub:
         self.cloud = TuyaCloud()
         self.tuya_local = TuyaLocal(self.ha)
         self.scanner = Scanner(self.ha, self.cloud, self.tuya_local)
+        self.local = LocalBridge(self.ha, self.cloud, self.scanner)
         self.hotspot = Hotspot(self.ha)
         self.zha = Zha(self.ha)
         self.z2m = Z2M(self.ha)
@@ -78,9 +80,20 @@ class Hub:
                 return next((e for e in entries if e["host"] == lan_ip and not e["device_cid"]), None)
             return None
 
+        mqtt_devices = {}
+        for ha_device in registries["devices"]:
+            for domain, identifier in ha_device.get("identifiers") or []:
+                if domain == "mqtt" and identifier.startswith("devicehub_tuya_"):
+                    mqtt_devices[identifier.removeprefix("devicehub_tuya_")] = ha_device["id"]
+
         rows = []
         for device in devices:
             seen = self.scanner.tuya_ip(device["id"]) or {}
+            if seen.get("ip"):
+                self.local.note_address(device["id"], seen["ip"], seen.get("version"))
+            local = self.local.link_info(device["id"])
+            if local:
+                local["ha_device_id"] = mqtt_devices.get(device["id"])
             device = {**device, "child": bool(device["node_id"]) and not seen.get("ip")}
             entry = find_entry(device, seen.get("ip"))
             drift = []
@@ -107,6 +120,7 @@ class Hub:
                     "ha_device_id": entry["ha_device_id"],
                     "broken": entry["broken"],
                 } if entry else None,
+                "local": local,
                 "drift": drift,
             })
         extra = [e for e in entries if e["entry_id"] not in matched]
@@ -141,6 +155,21 @@ class Hub:
                 result["local_key"] = result["local_key"] or entry["local_key"]
                 result["protocol"] = result["protocol"] or (str(entry["protocol_version"]) if entry["protocol_version"] else None)
         return result
+
+    async def save_local(self, device_ids):
+        view = await self.tuya_view()
+        rows = {d["id"]: d for d in view["devices"]}
+        everything = not device_ids
+        if everything:
+            device_ids = [d["id"] for d in view["devices"]]
+        blocked = {}
+        for device_id in device_ids:
+            entry = (rows.get(device_id) or {}).get("tuya_local")
+            if entry and entry["state"] == "loaded":
+                blocked[device_id] = (
+                    "Tuya Local already controls it. Remove it from Tuya Local first so the device keeps one local connection."
+                )
+        return await self.local.save(device_ids, blocked, refresh_live=not everything)
 
     async def add_params(self, body):
         device_id = (body.get("device_id") or "").strip()
@@ -184,24 +213,33 @@ class Hub:
             tuya = {"devices": [], "unmatched_entries": [], "error": str(exc)}
         for device in tuya["devices"]:
             entry = device["tuya_local"]
+            local = device["local"]
             if device["lan_ip"]:
                 lan_claimed.add(device["lan_ip"])
             if entry and entry.get("host"):
                 lan_claimed.add(entry["host"])
+            if local:
+                status = "Local control in Home Assistant" if local["state"] == "online" else f"Local link {local['state']}"
+            elif entry and entry["broken"]:
+                status = "Tuya Local entry is broken"
+            elif device["drift"]:
+                status = "Needs attention: " + " and ".join(device["drift"]) + " changed"
+            elif entry:
+                status = "In Tuya Local" if entry["state"] == "loaded" else f"Tuya Local: {entry['state'].replace('_', ' ')}"
+            else:
+                status = "Cloud only"
             rows.append({
                 "key": f"tuya:{device['id']}",
                 "name": device["name"],
                 "sources": ["tuya", "tuya_local"] if entry else ["tuya"],
                 "kind": device["category_name"] or device["product_name"] or device["category"],
                 "area": entry["area"] if entry else None,
-                "online": device["online"],
-                "status": "Tuya Local entry is broken" if entry and entry["broken"]
-                else ("Needs attention: " + " and ".join(device["drift"]) + " changed") if device["drift"]
-                else ("In Tuya Local" if entry and entry["state"] == "loaded"
-                      else f"Tuya Local: {entry['state'].replace('_', ' ')}" if entry else "Cloud only"),
-                "warn": bool(device["drift"]) or bool(entry and entry["state"] != "loaded"),
+                "online": local["state"] == "online" if local else device["online"],
+                "status": status,
+                "warn": bool(local and local["state"] == "offline") or bool(device["drift"])
+                or bool(entry and entry["state"] != "loaded"),
                 "address": device["lan_ip"] or (f"via {device['gateway_name']}" if device["gateway_name"] else ""),
-                "ha_device_id": entry["ha_device_id"] if entry else None,
+                "ha_device_id": (local or {}).get("ha_device_id") or (entry["ha_device_id"] if entry else None),
                 "tab": "tuya",
             })
         for entry in tuya["unmatched_entries"]:
@@ -399,12 +437,30 @@ def routes(hub: Hub):
 
     @r.get("/api/tuya/devices/{device_id}/control")
     async def tuya_control(request):
-        return web.json_response(await hub.cloud.control(request.match_info["device_id"]))
+        device_id = request.match_info["device_id"]
+        return web.json_response(hub.local.control(device_id) or await hub.cloud.control(device_id))
 
     @r.post("/api/tuya/devices/{device_id}/commands")
     async def tuya_command(request):
+        device_id = request.match_info["device_id"]
         data = await body(request)
-        return web.json_response(await hub.cloud.command(request.match_info["device_id"], data.get("commands")))
+        if hub.local.is_live(device_id):
+            return web.json_response(await hub.local.command(device_id, data.get("commands")))
+        return web.json_response(await hub.cloud.command(device_id, data.get("commands")))
+
+    @r.get("/api/local")
+    async def local_overview(_request):
+        return web.json_response(hub.local.overview())
+
+    @r.post("/api/local/save")
+    async def local_save(request):
+        data = await body(request)
+        ids = [str(i) for i in data.get("ids") or [] if i]
+        return web.json_response(await hub.save_local(ids))
+
+    @r.delete("/api/local/{device_id}")
+    async def local_forget(request):
+        return web.json_response(await hub.local.forget(request.match_info["device_id"]))
 
     @r.post("/api/tuya_local/add/start")
     async def tl_start(request):
@@ -548,8 +604,10 @@ async def create_app():
         app["ha_task"] = asyncio.create_task(hub.ha.run_forever())
         app["tuya_task"] = asyncio.create_task(hub.cloud.restore())
         app["hotspot_task"] = asyncio.create_task(hub.hotspot.ensure())
+        await hub.local.start()
 
     async def on_cleanup(_app):
+        await asyncio.to_thread(hub.local.stop)
         app["ha_task"].cancel()
         await session.close()
 

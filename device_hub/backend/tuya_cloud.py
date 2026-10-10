@@ -1,6 +1,7 @@
 """Tuya IoT Platform cloud project: login, device list with local keys."""
 
 import asyncio
+import json
 import os
 import socket
 import time
@@ -116,6 +117,7 @@ class TuyaCloud:
             "id": device_id,
             "name": device.get("name") or device_id,
             "online": device.get("online"),
+            "via": "cloud",
             "status": status,
             "functions": functions,
             "blocked": blocked,
@@ -133,6 +135,10 @@ class TuyaCloud:
             raise RuntimeError("Choose a command to send.")
         await asyncio.to_thread(_send, self._cloud, device_id, cleaned)
         return await self.control(device_id)
+
+    async def spec(self, device_id):
+        self._require()
+        return await asyncio.to_thread(_read_spec, self._cloud, device_id)
 
     def _require(self):
         if not self.connected:
@@ -193,8 +199,56 @@ def _denied(exc):
 
 _DENIED = (
     "Tuya lists this device, but it is not on the Smart Life account linked to this project. "
-    "The cloud API refuses its status and commands. Add it to that account, then open Control again."
+    "The cloud API refuses its status and commands. Add it to that account, then try again."
 )
+
+
+MODEL_TYPES = {"bool": "Boolean", "value": "Integer", "enum": "Enum", "bitmap": "Bitmap", "string": "String", "raw": "Raw"}
+
+
+def _read_spec(cloud, device_id):
+    """Data points as the device itself reports them over the LAN (the thing model), else Tuya's standard spec."""
+    try:
+        return _read_model(cloud, device_id)
+    except (RuntimeError, ValueError):
+        pass
+    try:
+        result = _cloud_result(cloud.getdps(device_id), "data points")
+    except RuntimeError as exc:
+        if _denied(exc):
+            raise RuntimeError(_DENIED) from exc
+        raise RuntimeError("Tuya publishes no data points for this device.") from exc
+    if not isinstance(result, dict) or not (result.get("functions") or result.get("status")):
+        raise RuntimeError("Tuya publishes no data points for this device.")
+    return {"functions": result.get("functions") or [], "status": result.get("status") or []}
+
+
+def _read_model(cloud, device_id):
+    result = _cloud_result(cloud.cloudrequest(f"/v2.0/cloud/thing/{device_id}/model"), "model") or {}
+    model = result.get("model") if isinstance(result, dict) else None
+    if isinstance(model, str):
+        model = json.loads(model)
+    functions, status = [], []
+    for service in (model or {}).get("services") or []:
+        for prop in service.get("properties") or []:
+            spec = prop.get("typeSpec") or {}
+            kind = MODEL_TYPES.get(spec.get("type"))
+            if not kind or prop.get("abilityId") is None or not prop.get("code"):
+                continue
+            item = {
+                "code": prop["code"],
+                "dp_id": prop["abilityId"],
+                "type": kind,
+                "values": json.dumps({k: v for k, v in spec.items() if k != "type"}),
+            }
+            mode = prop.get("accessMode") or "ro"
+            if "r" in mode:
+                status.append(item)
+            if "w" in mode:
+                functions.append(item)
+    if not functions and not status:
+        raise RuntimeError("Empty thing model.")
+    return {"functions": functions, "status": status}
 
 
 def _read_status(cloud, device_id):
