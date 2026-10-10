@@ -61,6 +61,7 @@ class LocalBridge:
         self.scanner = scanner
         self.profiles = {}
         self.links = {}
+        self._held = set()
         self.last_results = []
         self.mqtt = _Mqtt(self._on_mqtt_connect, self._on_mqtt_message)
         self._lock = threading.RLock()
@@ -216,7 +217,20 @@ class LocalBridge:
         self._announce(profile)
         self._start_link(profile)
 
+    async def hold(self, device_id):
+        """Close the LAN link so Tuya Local can open the one connection the device allows."""
+        self._held.add(device_id)
+        link = self.links.pop(device_id, None)
+        if link:
+            await asyncio.to_thread(link.stop)
+
+    async def release(self, device_id):
+        self._held.discard(device_id)
+        if device_id not in self.links and device_id in self.profiles:
+            self._start_link(self.profiles[device_id])
+
     async def forget(self, device_id):
+        self._held.discard(device_id)
         link = self.links.pop(device_id, None)
         if link:
             await asyncio.to_thread(link.stop)
@@ -248,6 +262,8 @@ class LocalBridge:
         store.save(STORE, {"devices": self.profiles})
 
     def _start_link(self, profile):
+        if profile["id"] in self._held or profile["id"] in self.links:
+            return
         link = _Link(self, profile)
         self.links[profile["id"]] = link
         link.start()

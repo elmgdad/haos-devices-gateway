@@ -58,6 +58,7 @@ class Hub:
         self.tuya_local = TuyaLocal(self.ha)
         self.scanner = Scanner(self.ha, self.cloud, self.tuya_local)
         self.local = LocalBridge(self.ha, self.cloud, self.scanner)
+        self.tuya_local.bridge = self.local
         self.hotspot = Hotspot(self.ha)
         self.zha = Zha(self.ha)
         self.z2m = Z2M(self.ha)

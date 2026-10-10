@@ -14,6 +14,7 @@ OPTION_FIELDS = ("local_key", "host", "protocol_version", "poll_only")
 
 ABORT_MESSAGES = {
     "already_configured": "This device is already in Tuya Local.",
+    "already_in_progress": "Tuya Local was already setting this device up. Close that setup in Home Assistant and try again.",
     "not_supported": "Tuya Local has no device file for this product yet.",
 }
 ERROR_MESSAGES = {
@@ -49,6 +50,8 @@ def _form_error(step):
 class TuyaLocal:
     def __init__(self, ha: HomeAssistant):
         self.ha = ha
+        self.bridge = None
+        self._pending: dict[str, str] = {}
         self._details: dict[str, dict] = {}
         self._details_lock = asyncio.Semaphore(3)
 
@@ -149,16 +152,12 @@ class TuyaLocal:
     async def start_add(self, device_id, host, local_key, protocol_version="auto", device_cid=None):
         if not device_id or not host or not local_key:
             raise HAError("Device ID, IP address and local key are all required.")
-        flow = await self.ha.rest("POST", "/config/config_entries/flow", {"handler": DOMAIN, "show_advanced_options": False})
-        flow_id = flow["flow_id"]
+        unique_id = f"{device_id}/{device_cid}" if device_cid else device_id
+        await self._clear_flows(unique_id)
+        if self.bridge:
+            await self.bridge.hold(device_id)
+        flow_id = None
         try:
-            step = flow
-            if step.get("step_id") == "user":
-                step = await self.ha.rest("POST", f"/config/config_entries/flow/{flow_id}", {"setup_mode": "manual"})
-            if step.get("type") == "abort":
-                raise HAError(ABORT_MESSAGES.get(step.get("reason"), step.get("reason")))
-            if step.get("step_id") != "local":
-                raise HAError(f"Tuya Local showed an unexpected step: {step.get('step_id')}.")
             payload = {
                 "device_id": device_id,
                 "host": host,
@@ -168,13 +167,36 @@ class TuyaLocal:
             }
             if device_cid:
                 payload["device_cid"] = device_cid
-            step = await self.ha.rest("POST", f"/config/config_entries/flow/{flow_id}", payload, timeout=300)
+            step = None
+            for attempt in (1, 2):
+                flow = await self.ha.rest(
+                    "POST", "/config/config_entries/flow", {"handler": DOMAIN, "show_advanced_options": False}
+                )
+                flow_id = flow["flow_id"]
+                stop = asyncio.Event()
+                sweep = asyncio.create_task(self._sweep_flows(unique_id, stop, {flow_id}))
+                try:
+                    step = flow
+                    if step.get("step_id") == "user":
+                        step = await self.ha.rest("POST", f"/config/config_entries/flow/{flow_id}", {"setup_mode": "manual"})
+                    if step.get("type") != "abort" and step.get("step_id") == "local":
+                        step = await self.ha.rest("POST", f"/config/config_entries/flow/{flow_id}", payload, timeout=300)
+                finally:
+                    stop.set()
+                    await sweep
+                if step.get("type") == "abort" and step.get("reason") == "already_in_progress" and attempt == 1:
+                    await self._delete_flow(flow_id)
+                    flow_id = None
+                    await self._clear_flows(unique_id)
+                    continue
+                break
             if step.get("type") == "abort":
                 raise HAError(ABORT_MESSAGES.get(step.get("reason"), step.get("reason")))
             if step.get("type") == "form" and step.get("step_id") == "local":
                 raise HAError(_form_error(step))
             if step.get("step_id") not in ("select_type", "select_type_auto_detected"):
                 raise HAError(f"Tuya Local showed an unexpected step: {step.get('step_id')}.")
+            self._pending[flow_id] = {"id": device_id, "replace": not device_cid}
             field = (step.get("data_schema") or [{}])[0]
             return {
                 "flow_id": flow_id,
@@ -183,8 +205,43 @@ class TuyaLocal:
                 "detected_protocol": (step.get("description_placeholders") or {}).get("detected_protocol"),
             }
         except Exception:
-            await self.cancel(flow_id)
+            if flow_id:
+                self._pending.pop(flow_id, None)
+                await self._delete_flow(flow_id)
+            if self.bridge:
+                await self.bridge.release(device_id)
             raise
+
+    async def _sweep_flows(self, unique_id, stop, keep):
+        """Drop discovery setups Tuya Local opens while the connection test runs."""
+        while not stop.is_set():
+            try:
+                await self._clear_flows(unique_id, keep)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                await asyncio.wait_for(stop.wait(), 0.4)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _clear_flows(self, unique_id, keep=()):
+        try:
+            flows = await self.ha.call("config_entries/flow/progress")
+        except HAError:
+            return
+        prefix = unique_id.split("/", 1)[0]
+        for flow in flows or []:
+            if flow.get("handler") != DOMAIN or flow.get("flow_id") in keep:
+                continue
+            uid = str((flow.get("context") or {}).get("unique_id") or "")
+            if uid == unique_id or uid == prefix or uid.startswith(f"{prefix}/"):
+                await self._delete_flow(flow["flow_id"])
+
+    async def _delete_flow(self, flow_id):
+        try:
+            await self.ha.rest("DELETE", f"/config/config_entries/flow/{flow_id}")
+        except HAError:
+            pass
 
     async def finish_add(self, flow_id, type_, name):
         try:
@@ -199,16 +256,25 @@ class TuyaLocal:
             if step.get("type") != "create_entry":
                 raise HAError(_form_error(step))
         except Exception:
-            await self.cancel(flow_id)
+            await self._delete_flow(flow_id)
+            await self._resume(flow_id)
             raise
+        await self._resume(flow_id, added=True)
         result = step.get("result") or {}
         return {"entry_id": result.get("entry_id"), "title": result.get("title") or step.get("title")}
 
     async def cancel(self, flow_id):
-        try:
-            await self.ha.rest("DELETE", f"/config/config_entries/flow/{flow_id}")
-        except HAError:
-            pass
+        await self._delete_flow(flow_id)
+        await self._resume(flow_id)
+
+    async def _resume(self, flow_id, added=False):
+        pending = self._pending.pop(flow_id, None)
+        if not pending or not self.bridge:
+            return
+        if added and pending["replace"]:
+            await self.bridge.forget(pending["id"])
+        else:
+            await self.bridge.release(pending["id"])
 
     async def remove(self, entry_id):
         await self.ha.rest("DELETE", f"/config/config_entries/entry/{entry_id}")

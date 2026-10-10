@@ -282,7 +282,8 @@ export function BulkAddDialog({
       }
     >
       <p className="mb-3 text-sm text-muted">
-        Each device is tested and added with its best-matching device file. You can change the type later in Tuya Local.
+        Each device is tested and added with its best-matching device file. A setup Tuya Local already
+        has open for that device is closed first. You can change the type later in Tuya Local.
       </p>
       <ul className="divide-y divide-line rounded-md border border-line">
         {(devices ?? []).map((device) => {
