@@ -122,12 +122,25 @@ class LocalBridge:
     # Saved devices
 
     def overview(self):
-        links = sorted(self.links.values(), key=lambda link: link.profile["name"].lower())
-        return {
-            "mqtt": self.mqtt.info(),
-            "devices": [link.info() for link in links],
-            "last_results": self.last_results,
-        }
+        devices = [link.info() for link in self.links.values()]
+        shown = {item["id"] for item in devices}
+        for device_id in self._held:
+            profile = self.profiles.get(device_id)
+            if not profile or device_id in shown:
+                continue
+            devices.append({
+                "id": profile["id"],
+                "name": profile["name"],
+                "ip": profile["ip"],
+                "version": profile["version"],
+                "state": "offline",
+                "error": "Paused while Tuya Local connects.",
+                "last_seen": None,
+                "entities": len(profile["dps"]),
+                "saved_at": profile.get("saved_at"),
+            })
+        devices.sort(key=lambda item: item["name"].lower())
+        return {"mqtt": self.mqtt.info(), "devices": devices, "last_results": self.last_results}
 
     def link_info(self, device_id):
         link = self.links.get(device_id)
