@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { api } from "../api"
-import { copyText, errorText, usePoll } from "../lib"
+import { copyText, cx, errorText, usePoll } from "../lib"
 import type { Status } from "../types"
 import { Badge, Button, Field, Input, Notice, Panel, Select, useFeedback } from "../ui"
 
@@ -152,6 +152,7 @@ function SharePanel() {
   const share = usePoll(api.share)
   const [name, setName] = useState("")
   const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [everything, setEverything] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const data = share.data
   const docs = data?.docs
@@ -167,9 +168,10 @@ function SharePanel() {
   const create = async () => {
     setBusy("create")
     try {
-      const created = await api.createShare(name, [...picked])
+      const created = await api.createShare(name, everything ? ["*"] : [...picked])
       setName("")
       setPicked(new Set())
+      setEverything(false)
       await share.reload()
       if (await copyText(created.token)) feedback.ok(`Created “${created.name}” and copied the key.`)
       else feedback.ok(`Created “${created.name}”. Copy the key below.`)
@@ -218,7 +220,11 @@ function SharePanel() {
           </Field>
           <div>
             <p className="mb-1 text-sm font-medium">Devices</p>
-            <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border border-line p-2">
+            <label className="mb-2 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={everything} onChange={(e) => setEverything(e.target.checked)} />
+              All devices, including ones added later
+            </label>
+            <div className={cx("max-h-56 space-y-1 overflow-y-auto rounded-md border border-line p-2", everything && "pointer-events-none opacity-40")}>
               {(data?.devices ?? []).length === 0 && <p className="text-xs text-muted">No devices are in Home Assistant yet.</p>}
               {(data?.devices ?? []).map((device) => (
                 <label key={device.id} className="flex items-center gap-2 text-sm">
@@ -245,7 +251,9 @@ function SharePanel() {
                   <button className="block max-w-full truncate font-mono text-xs text-muted hover:text-ink" onClick={() => void copyText(token.token)}>
                     {token.token}
                   </button>
-                  <p className="text-xs text-muted">{token.device_ids.length} devices</p>
+                  <p className="text-xs text-muted">
+                    {token.device_ids.includes("*") ? "All devices" : `${token.device_ids.length} devices`}
+                  </p>
                 </li>
               ))}
             </ul>

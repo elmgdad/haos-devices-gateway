@@ -1,3 +1,7 @@
+# 0.1.16
+
+A share key can cover all devices, including ones added later. Shared controls list their options, ranges and units.
+
 # 0.1.15
 
 Volume up and down, and channel up and down, are separate buttons in Home Assistant.

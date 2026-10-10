@@ -14,6 +14,7 @@ from . import store
 from .ir import _slug
 
 STORE = "share"
+ALL = "*"
 WRITABLE = {
     "switch", "light", "fan", "cover", "lock", "number", "select", "input_boolean",
     "input_number", "input_select", "button", "climate", "humidifier", "valve", "siren",
@@ -176,6 +177,8 @@ a {{ color: #8ec8ff; }}
 
     async def devices_for(self, token):
         allowed = set(token["device_ids"])
+        if ALL in allowed:
+            return await self.catalog()
         return [item for item in await self.catalog() if item["id"] in allowed or _bare(item["id"]) in allowed]
 
     async def device_for(self, token, device_id):
