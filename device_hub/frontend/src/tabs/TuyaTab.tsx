@@ -1,0 +1,548 @@
+import { Plus, Radar, RefreshCw, RotateCw, Trash2, Wrench } from "lucide-react"
+import { useMemo, useState } from "react"
+import { api } from "../api"
+import { cx, errorText, openInHa, sourceColor, timeAgo, usePoll } from "../lib"
+import type { TuyaConfig, TuyaDevice, TuyaLocalEntry } from "../types"
+import {
+  Badge,
+  Button,
+  Empty,
+  Field,
+  Input,
+  KeyCell,
+  Led,
+  Notice,
+  Panel,
+  SearchInput,
+  Select,
+  Td,
+  Th,
+  useFeedback,
+} from "../ui"
+import { AddDialog, BulkAddDialog, targetFrom, type AddTarget } from "./AddDialog"
+
+type Filter = "all" | "local" | "missing" | "attention"
+
+const FILTERS: { id: Filter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "local", label: "In Tuya Local" },
+  { id: "missing", label: "Not added" },
+  { id: "attention", label: "Needs attention" },
+]
+
+function needsAttention(device: TuyaDevice) {
+  const link = device.tuya_local
+  return device.drift.length > 0 || (link !== null && (link.broken || link.state !== "loaded"))
+}
+
+function LocalStatus({ device }: { device: TuyaDevice }) {
+  const link = device.tuya_local
+  if (!link) return <Badge>Not added</Badge>
+  if (link.broken) return <Badge tone="bad">Entry broken</Badge>
+  if (device.drift.includes("key")) return <Badge tone="bad">Local key changed</Badge>
+  if (device.drift.includes("ip")) return <Badge tone="bad">IP changed to {device.lan_ip}</Badge>
+  if (link.state !== "loaded") return <Badge tone="bad">Not loaded</Badge>
+  return <Badge tone="ok">In Tuya Local</Badge>
+}
+
+export async function findTuyaOnLan() {
+  const { networks, default: preferred } = await api.networks()
+  const cidr = preferred || networks[0]?.cidr
+  if (!cidr) throw new Error("No local network found to search.")
+  let status = await api.startScan(cidr, false)
+  while (status.running) {
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    status = await api.scan()
+  }
+  if (status.error) throw new Error(status.error)
+  return status
+}
+
+export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; onChanged: () => void }) {
+  const feedback = useFeedback()
+  const view = usePoll(() => api.tuya(), 60000)
+  const [filter, setFilter] = useState<Filter>(focus === "local" ? "local" : "all")
+  const [query, setQuery] = useState("")
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [adding, setAdding] = useState<AddTarget | null>(null)
+  const [bulk, setBulk] = useState<TuyaDevice[] | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const data = view.data
+  const devices = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return (data?.devices ?? []).filter((d) => {
+      if (filter === "local" && !d.tuya_local) return false
+      if (filter === "missing" && d.tuya_local) return false
+      if (filter === "attention" && !needsAttention(d)) return false
+      if (!q) return true
+      return [d.name, d.product_name, d.category_name, d.id, d.lan_ip ?? ""].some((v) => v.toLowerCase().includes(q))
+    })
+  }, [data, filter, query])
+
+  const refresh = async (cloud = false) => {
+    if (cloud) {
+      setBusy("refresh")
+      try {
+        view.setData(await api.tuya(true))
+      } catch (exc) {
+        feedback.fail(errorText(exc))
+      } finally {
+        setBusy(null)
+      }
+    } else {
+      await view.reload()
+    }
+    onChanged()
+  }
+
+  const run = async (id: string, action: () => Promise<unknown>, done: string) => {
+    setBusy(id)
+    try {
+      await action()
+      feedback.ok(done)
+      await refresh()
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const locate = () =>
+    run(
+      "locate",
+      async () => {
+        const status = await findTuyaOnLan()
+        return status
+      },
+      "Searched the network for Tuya devices.",
+    )
+
+  const fix = (device: TuyaDevice) => {
+    const link = device.tuya_local!
+    const changes: { local_key?: string; host?: string; protocol_version?: string } = {}
+    if (device.drift.includes("key")) changes.local_key = device.local_key
+    if (device.drift.includes("ip") && device.lan_ip) {
+      changes.host = device.lan_ip
+      if (device.protocol) changes.protocol_version = device.protocol
+    }
+    return run(`fix:${device.id}`, () => api.syncEntry(link.entry_id, changes), `Updated ${device.name} in Tuya Local.`)
+  }
+
+  const fixAll = async () => {
+    const targets = (data?.devices ?? []).filter((d) => d.drift.length && d.tuya_local)
+    for (const device of targets) await fix(device)
+  }
+
+  const removeEntry = async (entryId: string, title: string) => {
+    const ok = await feedback.confirm({
+      title: "Remove from Tuya Local?",
+      body: `${title} and its entities will be removed from Home Assistant. You can add it again from this list.`,
+      action: "Remove",
+      danger: true,
+    })
+    if (ok) await run(`remove:${entryId}`, () => api.removeEntry(entryId), `Removed ${title} from Tuya Local.`)
+  }
+
+  const readd = async (device: TuyaDevice) => {
+    const link = device.tuya_local!
+    const ok = await feedback.confirm({
+      title: `Add ${device.name} again?`,
+      body: "Tuya Local cannot open this entry's settings. Device Hub removes the broken entry, then opens the add dialog with the current IP and local key.",
+      action: "Remove and add again",
+      danger: true,
+    })
+    if (!ok) return
+    setBusy(`remove:${link.entry_id}`)
+    try {
+      await api.removeEntry(link.entry_id)
+      setAdding(targetFrom(device))
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  if (view.loading && !data) return <Panel><Empty title="Loading Tuya devices" /></Panel>
+  if (view.error && !data) {
+    return <Notice tone="bad">Could not load Tuya devices: {view.error}</Notice>
+  }
+  if (!data) return null
+  if (!data.config.connected) return <TuyaLogin config={data.config} onDone={() => refresh()} />
+
+  const selectable = devices.filter((d) => !d.tuya_local)
+  const chosen = (data.devices ?? []).filter((d) => selected.has(d.id) && !d.tuya_local)
+  const driftCount = data.devices.filter((d) => d.drift.length && d.tuya_local).length
+  const toggle = (id: string) =>
+    setSelected((s) => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const unscanned = data.devices.filter((d) => !d.lan_ip && !d.child).length
+
+  return (
+    <div className="space-y-4">
+      {!data.tuya_local.installed && (
+        <Notice
+          tone="bad"
+          action={<Button onClick={() => openInHa(data.tuya_local.hacs_url)}>Open in HACS</Button>}
+        >
+          Tuya Local is not installed. Download it from HACS and restart Home Assistant, then come back to add devices.
+        </Notice>
+      )}
+      {unscanned > 0 && data.tuya_local.installed && (
+        <Notice
+          action={
+            <Button icon={<Radar className="size-4" />} busy={busy === "locate"} onClick={locate}>
+              Find on network
+            </Button>
+          }
+        >
+          {unscanned} device{unscanned === 1 ? " has" : "s have"} no LAN address yet. Find on network listens for Tuya
+          broadcasts for about 12 seconds.
+        </Notice>
+      )}
+
+      <Panel
+        title={
+          <span className="flex items-center gap-2">
+            <span style={{ color: sourceColor("tuya") }}>Tuya cloud</span>
+            <span className="font-sans text-sm font-normal tracking-normal text-muted normal-case">
+              {data.config.access_id} · {data.config.region} · updated {timeAgo(data.config.fetched_at)}
+            </span>
+          </span>
+        }
+        aside={
+          <>
+            {driftCount > 0 && (
+              <Button icon={<Wrench className="size-4" />} onClick={fixAll} busy={busy?.startsWith("fix")}>
+                Fix {driftCount} in Tuya Local
+              </Button>
+            )}
+            <Button icon={<Radar className="size-4" />} busy={busy === "locate"} onClick={locate}>
+              Find on network
+            </Button>
+            <Button icon={<RefreshCw className="size-4" />} busy={busy === "refresh"} onClick={() => refresh(true)}>
+              Refresh from cloud
+            </Button>
+            <Button
+              variant="primary"
+              icon={<Plus className="size-4" />}
+              disabled={!chosen.length || !data.tuya_local.installed}
+              onClick={() => setBulk(chosen)}
+            >
+              Add {chosen.length || ""} to Tuya Local
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
+          <div className="flex rounded-md border border-line p-0.5">
+            {FILTERS.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setFilter(f.id)}
+                className={cx(
+                  "rounded px-3 py-1 text-sm",
+                  filter === f.id ? "bg-ink text-card" : "text-muted hover:text-ink",
+                )}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <SearchInput value={query} onChange={setQuery} placeholder="Search name, product, IP" />
+          {data.config.error && <span className="text-sm text-bad">{data.config.error}</span>}
+        </div>
+        {devices.length === 0 ? (
+          <Empty title="No devices here">
+            {filter === "all"
+              ? "Link your Smart Life account to the cloud project on iot.tuya.com (Devices, Link App Account), then refresh."
+              : "Nothing matches this filter."}
+          </Empty>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[980px] border-collapse text-sm">
+              <thead>
+                <tr>
+                  <Th className="w-10">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all not added"
+                      checked={selectable.length > 0 && selectable.every((d) => selected.has(d.id))}
+                      onChange={(e) => setSelected(e.target.checked ? new Set(selectable.map((d) => d.id)) : new Set())}
+                    />
+                  </Th>
+                  <Th>Device</Th>
+                  <Th>LAN address</Th>
+                  <Th>Local key</Th>
+                  <Th>Cloud</Th>
+                  <Th>Tuya Local</Th>
+                  <Th className="text-right">Actions</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {devices.map((device) => (
+                  <tr key={device.id} className="border-t border-line hover:bg-sunk/60">
+                    <Td>
+                      {!device.tuya_local && (
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${device.name}`}
+                          checked={selected.has(device.id)}
+                          onChange={() => toggle(device.id)}
+                        />
+                      )}
+                    </Td>
+                    <Td>
+                      <div className="font-medium">{device.name}</div>
+                      <div className="text-xs text-muted">
+                        {device.category_name || device.category} · {device.product_name}
+                      </div>
+                      <div className="font-mono text-[11px] text-muted">{device.id}</div>
+                    </Td>
+                    <Td mono>
+                      {device.lan_ip ? (
+                        <>
+                          {device.lan_ip}
+                          {device.protocol && <span className="ml-1.5 text-xs text-muted">v{device.protocol}</span>}
+                        </>
+                      ) : device.child ? (
+                        <span className="font-sans text-xs text-muted">
+                          via {device.gateway_name ?? "a gateway"}
+                          <span className="block font-mono">node {device.node_id}</span>
+                        </span>
+                      ) : (
+                        <span className="font-sans text-xs text-muted">not found yet</span>
+                      )}
+                    </Td>
+                    <Td>
+                      <KeyCell value={device.local_key} />
+                    </Td>
+                    <Td>
+                      <span className="inline-flex items-center gap-1.5 text-xs">
+                        <Led state={device.online ? "ok" : "off"} />
+                        {device.online ? "Online" : "Offline"}
+                      </span>
+                    </Td>
+                    <Td>
+                      <LocalStatus device={device} />
+                      {device.tuya_local && device.tuya_local.title !== device.name && (
+                        <div className="mt-0.5 text-xs text-muted">as {device.tuya_local.title}</div>
+                      )}
+                    </Td>
+                    <Td className="text-right">
+                      <div className="inline-flex gap-1.5">
+                        {!device.tuya_local && (
+                          <Button
+                            icon={<Plus className="size-4" />}
+                            disabled={!data.tuya_local.installed}
+                            onClick={() => setAdding(targetFrom(device))}
+                          >
+                            Add
+                          </Button>
+                        )}
+                        {device.tuya_local && device.drift.length > 0 && (
+                          <Button icon={<Wrench className="size-4" />} busy={busy === `fix:${device.id}`} onClick={() => fix(device)}>
+                            Fix
+                          </Button>
+                        )}
+                        {device.tuya_local?.broken && (
+                          <Button
+                            icon={<Plus className="size-4" />}
+                            busy={busy === `remove:${device.tuya_local.entry_id}`}
+                            onClick={() => readd(device)}
+                          >
+                            Add again
+                          </Button>
+                        )}
+                        {device.tuya_local && !device.tuya_local.broken && device.tuya_local.state !== "loaded" && (
+                          <Button
+                            icon={<RotateCw className="size-4" />}
+                            busy={busy === `reload:${device.tuya_local.entry_id}`}
+                            onClick={() =>
+                              run(`reload:${device.tuya_local!.entry_id}`, () => api.reloadEntry(device.tuya_local!.entry_id), `Reloaded ${device.name}.`)
+                            }
+                          >
+                            Reload
+                          </Button>
+                        )}
+                        {device.tuya_local && (
+                          <Button
+                            variant="ghost"
+                            aria-label={`Remove ${device.name} from Tuya Local`}
+                            title="Remove from Tuya Local"
+                            busy={busy === `remove:${device.tuya_local.entry_id}`}
+                            onClick={() => removeEntry(device.tuya_local!.entry_id, device.tuya_local!.title)}
+                            icon={<Trash2 className="size-4" />}
+                          />
+                        )}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      {data.unmatched_entries.length > 0 && (
+        <UnmatchedEntries
+          entries={data.unmatched_entries}
+          busy={busy}
+          onReload={(e) => run(`reload:${e.entry_id}`, () => api.reloadEntry(e.entry_id), `Reloaded ${e.title}.`)}
+          onRemove={(e) => removeEntry(e.entry_id, e.title)}
+        />
+      )}
+
+      <AddDialog target={adding} gateways={data.gateways} onClose={() => setAdding(null)} onAdded={() => refresh()} />
+      <BulkAddDialog
+        devices={bulk}
+        onClose={() => {
+          setBulk(null)
+          setSelected(new Set())
+        }}
+        onDone={() => refresh()}
+      />
+    </div>
+  )
+}
+
+function UnmatchedEntries({
+  entries,
+  busy,
+  onReload,
+  onRemove,
+}: {
+  entries: TuyaLocalEntry[]
+  busy: string | null
+  onReload: (entry: TuyaLocalEntry) => void
+  onRemove: (entry: TuyaLocalEntry) => void
+}) {
+  return (
+    <Panel title={<span style={{ color: sourceColor("tuya_local") }}>Tuya Local entries without a cloud match</span>}>
+      <p className="border-b border-line px-4 py-2.5 text-sm text-muted">
+        These entries are in Home Assistant but don't match any device in the cloud project or on the network scan.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-sm">
+          <thead>
+            <tr>
+              <Th>Entry</Th>
+              <Th>Host</Th>
+              <Th>Protocol</Th>
+              <Th>State</Th>
+              <Th className="text-right">Actions</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => (
+              <tr key={entry.entry_id} className="border-t border-line">
+                <Td>
+                  <div className="font-medium">{entry.title}</div>
+                  {entry.device_id && <div className="font-mono text-[11px] text-muted">{entry.device_id}</div>}
+                </Td>
+                <Td mono>{entry.host || "–"}</Td>
+                <Td mono>{entry.protocol_version ?? "–"}</Td>
+                <Td>
+                  {entry.state === "loaded" ? <Badge tone="ok">Loaded</Badge> : <Badge tone="bad">{entry.state.replace("_", " ")}</Badge>}
+                  {entry.broken && <div className="mt-0.5 text-xs text-muted">Settings unreadable; remove and add again.</div>}
+                </Td>
+                <Td className="text-right">
+                  <div className="inline-flex gap-1.5">
+                    <Button icon={<RotateCw className="size-4" />} busy={busy === `reload:${entry.entry_id}`} onClick={() => onReload(entry)}>
+                      Reload
+                    </Button>
+                    <Button variant="danger" icon={<Trash2 className="size-4" />} busy={busy === `remove:${entry.entry_id}`} onClick={() => onRemove(entry)}>
+                      Remove
+                    </Button>
+                  </div>
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  )
+}
+
+function TuyaLogin({ config, onDone }: { config: TuyaConfig; onDone: () => void }) {
+  const feedback = useFeedback()
+  const [accessId, setAccessId] = useState(config.access_id)
+  const [secret, setSecret] = useState("")
+  const [region, setRegion] = useState(config.region || "eu")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(config.error)
+
+  const submit = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await api.tuyaLogin(accessId, secret, region)
+      feedback.ok(`Signed in. ${result.device_count} devices found.`)
+      onDone()
+    } catch (exc) {
+      setError(errorText(exc))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-[minmax(0,420px)_1fr]">
+      <Panel title={<span style={{ color: sourceColor("tuya") }}>Sign in to your Tuya cloud project</span>}>
+        <form
+          className="space-y-4 p-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void submit()
+          }}
+        >
+          <Field label="Access ID / Client ID">
+            <Input value={accessId} onChange={(e) => setAccessId(e.target.value)} className="font-mono" autoComplete="off" required />
+          </Field>
+          <Field label="Access Secret / Client Secret" hint={config.has_secret ? "Leave empty to keep the saved secret." : undefined}>
+            <Input
+              type="password"
+              value={secret}
+              onChange={(e) => setSecret(e.target.value)}
+              className="font-mono"
+              autoComplete="off"
+              placeholder={config.has_secret ? "Saved" : ""}
+            />
+          </Field>
+          <Field label="Data center" hint="Must match the data center of your cloud project.">
+            <Select value={region} onChange={(e) => setRegion(e.target.value)}>
+              {config.regions.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name} ({r.id})
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {error && <p className="rounded-md bg-bad/10 px-3 py-2 text-sm text-bad">{error}</p>}
+          <Button variant="primary" type="submit" busy={busy}>
+            Connect
+          </Button>
+        </form>
+      </Panel>
+      <Panel title="Where to find these">
+        <ol className="list-decimal space-y-2 py-4 pr-4 pl-9 text-sm text-muted">
+          <li>Open iot.tuya.com, then Cloud, Development, and your project.</li>
+          <li>Copy the Access ID and Access Secret from the Overview tab.</li>
+          <li>
+            Under Devices, Link App Account, scan the QR code with the Smart Life app so your devices and their local keys
+            appear here.
+          </li>
+          <li>The secret is stored only in this app's private storage on your Home Assistant.</li>
+        </ol>
+      </Panel>
+    </div>
+  )
+}
