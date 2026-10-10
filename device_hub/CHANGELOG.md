@@ -1,3 +1,7 @@
+# 0.1.15
+
+Volume up and down, and channel up and down, are separate buttons in Home Assistant.
+
 # 0.1.14
 
 IR remotes. TV and AC remotes added on a control panel get buttons and AC controls in Device Hub, Home Assistant and the API. Any remote can be learned on a panel or Smart IR and is then sent on your network without the Tuya cloud.

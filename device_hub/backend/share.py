@@ -5,13 +5,13 @@ The panel API stays inside Home Assistant. This one listens on the Pi
 """
 
 import html
-import re
 import secrets
 import time
 
 from aiohttp import web
 
 from . import store
+from .ir import _slug
 
 STORE = "share"
 WRITABLE = {
@@ -381,10 +381,6 @@ a {{ color: #8ec8ff; }}
 
 def _bare(device_id):
     return device_id.split(":", 1)[1] if ":" in device_id else device_id
-
-
-def _slug(text):
-    return re.sub(r"[^a-z0-9]+", "_", str(text).lower()).strip("_") or "key"
 
 
 def _point_limits(point):

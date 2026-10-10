@@ -53,6 +53,11 @@ def _real_code(value):
 
 
 def _slug(text):
+    text = str(text).lower().replace("+", " plus ").replace("-", " minus ")
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or "key"
+
+
+def _old_slug(text):
     return re.sub(r"[^a-z0-9]+", "_", str(text).lower()).strip("_") or "key"
 
 
@@ -510,7 +515,14 @@ class IrRemotes:
         for remote in self._all():
             for topic, config in _discovery(remote, self._keys_of(remote), remote.get("blaster_id") in saved):
                 fresh[topic] = json.dumps(config)
-        for topic in set(self._announced) - set(fresh):
+        stale = set(self._announced) - set(fresh)
+        if not self._announced:
+            for remote in self._all():
+                for key in self._keys_of(remote):
+                    if _old_slug(key["code"]) != _slug(key["code"]):
+                        stale.add(f"{DISCOVERY}/button/devicehub_ir_{remote['id']}/{_old_slug(key['code'])}/config")
+            stale -= set(fresh)
+        for topic in stale:
             mqtt.publish(topic, "", retain=True)
         for topic, payload in fresh.items():
             if self._announced.get(topic) != payload:
