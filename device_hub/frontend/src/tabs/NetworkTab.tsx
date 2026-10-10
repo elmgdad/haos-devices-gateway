@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react"
 import { api } from "../api"
 import { cx, errorText, sourceColor, timeAgo, usePoll } from "../lib"
 import type { Gateway, ScanHost, WifiView } from "../types"
-import { Badge, Button, Empty, Input, Led, Notice, Panel, SearchInput, Select, Td, Th, Toggle, useFeedback } from "../ui"
+import { Badge, Button, Empty, Field, Input, Led, Notice, Panel, SearchInput, Select, Td, Th, Toggle, useFeedback } from "../ui"
 import { AddDialog, targetFrom, type AddTarget } from "./AddDialog"
 
 const CUSTOM = "__custom__"
@@ -83,6 +83,7 @@ export default function NetworkTab({ onChanged }: { onChanged: () => void }) {
 
   return (
     <div className="space-y-4">
+      <HotspotPanel />
       <Panel title={<span style={{ color: sourceColor("lan") }}>Scan a network</span>}>
         <div className="flex flex-wrap items-end gap-3 px-4 py-4">
           <label className="block">
@@ -267,6 +268,104 @@ export default function NetworkTab({ onChanged }: { onChanged: () => void }) {
         }}
       />
     </div>
+  )
+}
+
+function HotspotPanel() {
+  const feedback = useFeedback()
+  const hotspot = usePoll(api.hotspot, 10000)
+  const [ssid, setSsid] = useState("DeviceHub")
+  const [password, setPassword] = useState("")
+  const [busy, setBusy] = useState(false)
+  const data = hotspot.data
+
+  const start = async () => {
+    const address = "10.42.0.1"
+    const ok = await feedback.confirm({
+      title: `Start hotspot ${ssid.trim()}?`,
+      body: data?.ethernet_ipv4
+        ? `The Raspberry Pi leaves its current Wi-Fi and broadcasts ${ssid.trim()} on 2.4 GHz. Devices that join get an address from the Pi. This page stays reachable on Ethernet.`
+        : `The Raspberry Pi leaves its current Wi-Fi and broadcasts ${ssid.trim()} on 2.4 GHz. Ethernet has no IPv4 address, so this page will stop loading. Join ${ssid.trim()} and open http://${address}:8123. Stop the hotspot there to rejoin the previous Wi-Fi.`,
+      action: "Start hotspot",
+      danger: !data?.ethernet_ipv4,
+    })
+    if (!ok) return
+    setBusy(true)
+    try {
+      hotspot.setData(await api.startHotspot(ssid.trim(), password))
+      feedback.ok(`Hotspot ${ssid.trim()} is on.`)
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const stop = async () => {
+    setBusy(true)
+    try {
+      hotspot.setData(await api.stopHotspot())
+      feedback.ok("Hotspot stopped. The Pi is rejoining its previous Wi-Fi.")
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Panel
+      title="Raspberry Pi hotspot"
+      aside={
+        data?.running ? (
+          <Button variant="danger" busy={busy} onClick={stop}>
+            Stop hotspot
+          </Button>
+        ) : (
+          <Button variant="primary" icon={<Wifi className="size-4" />} busy={busy} disabled={!data?.available} onClick={start}>
+            Start hotspot
+          </Button>
+        )
+      }
+    >
+      <div className="space-y-4 px-4 py-4">
+        {data?.reason && <p className="text-sm text-muted">{data.reason}</p>}
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <Led state={data?.running ? "ok" : data?.ssid ? "off" : "warn"} />
+          {data?.running ? (
+            <span>
+              Broadcasting <b>{data.ssid}</b>
+              {data.address ? ` at ${data.address}` : ""}. Open Home Assistant at{" "}
+              <span className="font-mono">http://{data.address || "10.42.0.1"}:8123</span>.
+            </span>
+          ) : (
+            <span>
+              {data?.ssid ? (
+                <>
+                  Radio {data.interface} is joined to <b>{data.ssid}</b>
+                  {data.signal != null ? ` (${data.signal}%)` : ""}.
+                </>
+              ) : (
+                "No Wi-Fi radio found."
+              )}
+            </span>
+          )}
+          {!data?.ethernet_ipv4 && data && !data.running && (
+            <Badge tone="bad">No Ethernet IPv4</Badge>
+          )}
+        </div>
+        {!data?.running && (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Hotspot name">
+              <Input value={ssid} onChange={(e) => setSsid(e.target.value)} maxLength={32} />
+            </Field>
+            <Field label="Password" hint="8 to 63 characters. Devices join this 2.4 GHz network.">
+              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+            </Field>
+          </div>
+        )}
+      </div>
+    </Panel>
   )
 }
 

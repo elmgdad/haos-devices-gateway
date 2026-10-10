@@ -179,6 +179,18 @@ export interface AccessPoint {
   vendor: string
 }
 
+export interface HotspotStatus {
+  available: boolean
+  reason: string | null
+  interface: string | null
+  running: boolean
+  ssid: string | null
+  address: string | null
+  signal: number | null
+  ethernet_ipv4: boolean
+  previous: string | null
+}
+
 export interface WifiView {
   available: boolean
   interface: string | null

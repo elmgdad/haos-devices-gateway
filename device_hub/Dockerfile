@@ -1,6 +1,6 @@
 FROM python:3.13-alpine
 
-RUN apk add --no-cache arp-scan
+RUN apk add --no-cache arp-scan networkmanager-cli
 
 WORKDIR /app
 COPY requirements.txt .

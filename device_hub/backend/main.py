@@ -10,6 +10,7 @@ from aiohttp import web
 
 from . import store
 from .ha import HAError, HomeAssistant
+from .hotspot import Hotspot
 from .scanner import Scanner
 from .tuya_cloud import TuyaCloud
 from .tuya_local import TuyaLocal
@@ -55,6 +56,7 @@ class Hub:
         self.cloud = TuyaCloud()
         self.tuya_local = TuyaLocal(self.ha)
         self.scanner = Scanner(self.ha, self.cloud, self.tuya_local)
+        self.hotspot = Hotspot(self.ha)
         self.zha = Zha(self.ha)
         self.z2m = Z2M(self.ha)
 
@@ -434,6 +436,19 @@ def routes(hub: Hub):
     @r.get("/api/scan/wifi")
     async def scan_wifi(_request):
         return web.json_response(await hub.scanner.wifi())
+
+    @r.get("/api/hotspot")
+    async def hotspot_status(_request):
+        return web.json_response(await hub.hotspot.status())
+
+    @r.post("/api/hotspot")
+    async def hotspot_start(request):
+        data = await body(request)
+        return web.json_response(await hub.hotspot.start(data.get("ssid"), data.get("password")))
+
+    @r.delete("/api/hotspot")
+    async def hotspot_stop(_request):
+        return web.json_response(await hub.hotspot.stop())
 
     @r.get("/api/zha")
     async def zha(_request):

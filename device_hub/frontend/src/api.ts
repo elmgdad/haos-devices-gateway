@@ -1,6 +1,7 @@
 import type {
   AddStart,
   Area,
+  HotspotStatus,
   Network,
   ScanStatus,
   Settings,
@@ -64,6 +65,9 @@ export const api = {
   networks: () => get<{ networks: Network[]; default: string }>("/scan/networks"),
   startScan: (cidr: string, sweep = true) => post<ScanStatus>("/scan", { cidr, sweep, mdns: sweep }),
   wifi: () => get<WifiView>("/scan/wifi"),
+  hotspot: () => get<HotspotStatus>("/hotspot"),
+  startHotspot: (ssid: string, password: string) => post<HotspotStatus>("/hotspot", { ssid, password }),
+  stopHotspot: () => del<HotspotStatus>("/hotspot"),
 
   zha: () => get<ZhaView>("/zha"),
   zhaPermit: (duration: number) => post("/zha/permit", { duration }),
