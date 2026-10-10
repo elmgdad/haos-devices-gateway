@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 _LOGGER = logging.getLogger(__name__)
@@ -231,9 +232,24 @@ class Hotspot:
     def _forward(self):
         path = Path("/proc/sys/net/ipv4/ip_forward")
         try:
+            if path.read_text().strip() == "1":
+                return
+        except OSError:
+            pass
+        try:
             path.write_text("1\n")
+            return
         except OSError as exc:
-            raise RuntimeError("The Pi will not forward traffic from the hotspot.") from exc
+            _LOGGER.warning("Could not write ip_forward directly: %s", exc)
+        if not shutil.which("nsenter"):
+            raise RuntimeError("The Pi will not forward traffic from the hotspot.")
+        result = subprocess.run(
+            ["nsenter", "-t", "1", "-m", "--", "sysctl", "-w", "net.ipv4.ip_forward=1"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeError(detail or "The Pi will not forward traffic from the hotspot.")
 
     async def _nat(self, inside, outside):
         if not shutil.which("iptables"):

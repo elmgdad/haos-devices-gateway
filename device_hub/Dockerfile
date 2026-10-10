@@ -1,6 +1,6 @@
 FROM python:3.13-alpine
 
-RUN apk add --no-cache arp-scan networkmanager-cli dnsmasq iptables ip6tables
+RUN apk add --no-cache arp-scan networkmanager-cli dnsmasq iptables ip6tables iproute2 util-linux
 
 WORKDIR /app
 COPY requirements.txt .
