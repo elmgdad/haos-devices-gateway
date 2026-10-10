@@ -42,6 +42,26 @@ export interface TuyaLocalLink {
   broken: boolean
 }
 
+export interface TuyaStatusItem {
+  code: string
+  value: boolean | number | string | null
+}
+
+export interface TuyaFunction {
+  code: string
+  type: string
+  values: string
+  desc: string
+}
+
+export interface TuyaControl {
+  id: string
+  name: string
+  online: boolean | null
+  status: TuyaStatusItem[]
+  functions: TuyaFunction[]
+}
+
 export interface TuyaDevice {
   id: string
   name: string

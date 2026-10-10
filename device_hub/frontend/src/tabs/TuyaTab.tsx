@@ -1,8 +1,8 @@
-import { Plus, Radar, RefreshCw, RotateCw, Trash2, Wrench } from "lucide-react"
-import { useMemo, useState } from "react"
+import { Plus, Radar, RefreshCw, RotateCw, SlidersHorizontal, Trash2, Wrench } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
 import { api } from "../api"
 import { cx, errorText, openInHa, sourceColor, timeAgo, usePoll } from "../lib"
-import type { TuyaConfig, TuyaDevice, TuyaLocalEntry } from "../types"
+import type { TuyaConfig, TuyaControl, TuyaDevice, TuyaFunction, TuyaLocalEntry } from "../types"
 import {
   Badge,
   Button,
@@ -11,6 +11,7 @@ import {
   Input,
   KeyCell,
   Led,
+  Modal,
   Notice,
   Panel,
   SearchInput,
@@ -65,6 +66,7 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [adding, setAdding] = useState<AddTarget | null>(null)
+  const [controlling, setControlling] = useState<TuyaDevice | null>(null)
   const [bulk, setBulk] = useState<TuyaDevice[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -337,6 +339,9 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
                     </Td>
                     <Td className="text-right">
                       <div className="inline-flex gap-1.5">
+                        <Button icon={<SlidersHorizontal className="size-4" />} onClick={() => setControlling(device)}>
+                          Control
+                        </Button>
                         {!device.tuya_local && (
                           <Button
                             icon={<Plus className="size-4" />}
@@ -400,6 +405,7 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
         />
       )}
 
+      <ControlDialog device={controlling} onClose={() => setControlling(null)} />
       <AddDialog target={adding} gateways={data.gateways} onClose={() => setAdding(null)} onAdded={() => refresh()} />
       <BulkAddDialog
         devices={bulk}
@@ -410,6 +416,169 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
         onDone={() => refresh()}
       />
     </div>
+  )
+}
+
+function fnSpec(fn: TuyaFunction): { range?: string[]; min?: number; max?: number; step?: number; unit?: string } {
+  if (!fn.values) return {}
+  try {
+    const parsed = JSON.parse(fn.values) as { range?: string[]; min?: number; max?: number; step?: number; unit?: string }
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function dpLabel(code: string) {
+  return code.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function showDp(value: boolean | number | string | null) {
+  if (value === true) return "On"
+  if (value === false) return "Off"
+  if (value == null || value === "") return "—"
+  if (typeof value === "string" && /^[a-z0-9_]+$/.test(value)) return dpLabel(value)
+  return String(value)
+}
+
+function ControlDialog({ device, onClose }: { device: TuyaDevice | null; onClose: () => void }) {
+  const feedback = useFeedback()
+  const [detail, setDetail] = useState<TuyaControl | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!device) {
+      setDetail(null)
+      setError(null)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    api
+      .tuyaControl(device.id)
+      .then((result) => {
+        if (cancelled) return
+        setDetail(result)
+        const next: Record<string, string> = {}
+        for (const fn of result.functions) {
+          const current = result.status.find((item) => item.code === fn.code)
+          if (current?.value != null) next[fn.code] = String(current.value)
+        }
+        setDrafts(next)
+      })
+      .catch((exc) => {
+        if (!cancelled) setError(errorText(exc))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [device])
+
+  const send = async (code: string, value: boolean | number | string) => {
+    if (!device) return
+    setBusy(code)
+    setError(null)
+    try {
+      const result = await api.tuyaCommand(device.id, code, value)
+      setDetail(result)
+      setDrafts((current) => {
+        const next = { ...current }
+        for (const item of result.status) {
+          if (item.value != null) next[item.code] = String(item.value)
+        }
+        return next
+      })
+      feedback.ok(`${dpLabel(code)} sent.`)
+    } catch (exc) {
+      setError(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const statusOf = (code: string) => detail?.status.find((item) => item.code === code)?.value
+
+  return (
+    <Modal open={device !== null} title={device ? `Control ${device.name}` : "Control"} onClose={onClose} wide>
+      {loading && <p className="text-sm text-muted">Reading the device from Tuya…</p>}
+      {error && <p className="mb-3 rounded-md bg-bad/10 px-3 py-2 text-sm text-bad">{error}</p>}
+      {detail && (
+        <div className="space-y-4">
+          <p className="flex items-center gap-2 text-sm text-muted">
+            <Led state={detail.online ? "ok" : "off"} />
+            {detail.online ? "Online" : "Offline"}. Commands go through the Tuya cloud API.
+          </p>
+          {detail.status.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {detail.status.map((item) => (
+                <span key={item.code} className="rounded-md border border-line bg-sunk px-2 py-1 text-xs">
+                  <span className="text-muted">{dpLabel(item.code)}</span> <b>{showDp(item.value)}</b>
+                </span>
+              ))}
+            </div>
+          )}
+          {detail.functions.length === 0 ? (
+            <p className="text-sm text-muted">Tuya did not publish any standard commands for this device.</p>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {detail.functions.map((fn) => {
+                const spec = fnSpec(fn)
+                const current = statusOf(fn.code)
+                return (
+                  <div key={fn.code} className="rounded-md border border-line px-3 py-3">
+                    <div className="mb-2 text-sm font-medium">{fn.desc || dpLabel(fn.code)}</div>
+                    {fn.type === "Boolean" ? (
+                      <div className="flex gap-2">
+                        <Button variant={current === true ? "primary" : "ghost"} busy={busy === fn.code} onClick={() => send(fn.code, true)}>
+                          On
+                        </Button>
+                        <Button variant={current === false ? "primary" : "ghost"} busy={busy === fn.code} onClick={() => send(fn.code, false)}>
+                          Off
+                        </Button>
+                      </div>
+                    ) : Array.isArray(spec.range) ? (
+                      <div className="flex items-center gap-2">
+                        <Select value={drafts[fn.code] ?? ""} onChange={(e) => setDrafts((d) => ({ ...d, [fn.code]: e.target.value }))}>
+                          {spec.range.map((item) => (
+                            <option key={item} value={item}>
+                              {dpLabel(item)}
+                            </option>
+                          ))}
+                        </Select>
+                        <Button busy={busy === fn.code} onClick={() => send(fn.code, drafts[fn.code] ?? spec.range![0])}>
+                          Apply
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type={fn.type === "Integer" ? "number" : "text"}
+                          min={spec.min}
+                          max={spec.max}
+                          step={spec.step || (fn.type === "Integer" ? 1 : undefined)}
+                          value={drafts[fn.code] ?? ""}
+                          onChange={(e) => setDrafts((d) => ({ ...d, [fn.code]: e.target.value }))}
+                        />
+                        <Button busy={busy === fn.code} onClick={() => send(fn.code, drafts[fn.code] ?? "")}>
+                          Apply
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
   )
 }
 

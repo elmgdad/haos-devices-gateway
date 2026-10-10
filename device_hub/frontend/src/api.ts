@@ -7,6 +7,7 @@ import type {
   Settings,
   Status,
   TuyaConfig,
+  TuyaControl,
   TuyaView,
   UnifiedDevice,
   WifiView,
@@ -44,6 +45,9 @@ export const api = {
   tuyaLogin: (access_id: string, secret: string, region: string) =>
     post<TuyaConfig>("/tuya/login", { access_id, secret, region }),
   tuyaLogout: () => post<TuyaConfig>("/tuya/logout"),
+  tuyaControl: (id: string) => get<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/control`),
+  tuyaCommand: (id: string, code: string, value: boolean | number | string) =>
+    post<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/commands`, { commands: [{ code, value }] }),
 
   addStart: (body: {
     device_id: string

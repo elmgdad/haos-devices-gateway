@@ -108,6 +108,38 @@ class TuyaCloud:
     def by_id(self, device_id):
         return next((d for d in self.devices if d["id"] == device_id), None)
 
+    async def control(self, device_id):
+        self._require()
+        device = self.by_id(device_id) or {}
+        status, functions = await asyncio.gather(
+            asyncio.to_thread(_read_status, self._cloud, device_id),
+            asyncio.to_thread(_read_functions, self._cloud, device_id),
+        )
+        return {
+            "id": device_id,
+            "name": device.get("name") or device_id,
+            "online": device.get("online"),
+            "status": status,
+            "functions": functions,
+        }
+
+    async def command(self, device_id, commands):
+        self._require()
+        cleaned = []
+        for command in commands or []:
+            code = str((command or {}).get("code") or "").strip()
+            if not code:
+                continue
+            cleaned.append({"code": code, "value": _coerce(command.get("value"))})
+        if not cleaned:
+            raise RuntimeError("Choose a command to send.")
+        await asyncio.to_thread(_send, self._cloud, device_id, cleaned)
+        return await self.control(device_id)
+
+    def _require(self):
+        if not self.connected:
+            raise RuntimeError("Sign in to the Tuya cloud project first.")
+
 
 def _initial_creds():
     saved = store.load("tuya") or {}
@@ -127,6 +159,62 @@ def _initial_creds():
             "source": "env",
         }
     return saved
+
+
+def _cloud_result(payload, what):
+    if not isinstance(payload, dict) or payload.get("success") is False or payload.get("Error"):
+        message = None
+        if isinstance(payload, dict):
+            message = payload.get("Payload") or payload.get("msg") or payload.get("Error")
+        raise RuntimeError(str(message or f"Tuya did not return the device {what}."))
+    return payload.get("result")
+
+
+def _read_status(cloud, device_id):
+    result = _cloud_result(cloud.getstatus(device_id), "status")
+    if not isinstance(result, list):
+        return []
+    return [{"code": item.get("code"), "value": item.get("value")} for item in result if item.get("code")]
+
+
+def _read_functions(cloud, device_id):
+    result = _cloud_result(cloud.getfunctions(device_id), "commands") or {}
+    functions = result.get("functions") if isinstance(result, dict) else []
+    cleaned = []
+    for item in functions or []:
+        code = item.get("code")
+        if not code:
+            continue
+        cleaned.append({
+            "code": code,
+            "type": item.get("type") or "",
+            "values": item.get("values") or "",
+            "desc": item.get("desc") or "",
+        })
+    return cleaned
+
+
+def _send(cloud, device_id, commands):
+    _cloud_result(cloud.sendcommand(device_id, {"commands": commands}), "command")
+
+
+def _coerce(value):
+    if isinstance(value, (bool, int, float)):
+        return value
+    text = str(value if value is not None else "").strip()
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        return int(text)
+    try:
+        if "." in text:
+            return float(text)
+    except ValueError:
+        pass
+    return text
 
 
 def _open_cloud(access_id, secret, region):

@@ -397,6 +397,15 @@ def routes(hub: Hub):
         hub.cloud.logout()
         return web.json_response(hub.cloud.config())
 
+    @r.get("/api/tuya/devices/{device_id}/control")
+    async def tuya_control(request):
+        return web.json_response(await hub.cloud.control(request.match_info["device_id"]))
+
+    @r.post("/api/tuya/devices/{device_id}/commands")
+    async def tuya_command(request):
+        data = await body(request)
+        return web.json_response(await hub.cloud.command(request.match_info["device_id"], data.get("commands")))
+
     @r.post("/api/tuya_local/add/start")
     async def tl_start(request):
         params = await hub.add_params(await body(request))
