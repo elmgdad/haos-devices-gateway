@@ -23,6 +23,7 @@ export interface UnifiedDevice {
   sources: Source[]
   kind: string
   area: string | null
+  area_id: string | null
   online: boolean | null
   status: string
   warn: boolean
@@ -38,6 +39,7 @@ export interface TuyaLocalLink {
   host: string | null
   protocol_version: string | number | null
   area: string | null
+  area_id?: string | null
   ha_device_id: string | null
   broken: boolean
 }
@@ -75,6 +77,51 @@ export interface LocalLink {
   entities: number
   saved_at: number | null
   ha_device_id?: string | null
+  area?: string | null
+  area_id?: string | null
+  controls?: DeviceControl[]
+}
+
+export interface DeviceControl {
+  code: string
+  name: string
+  type: string
+  entity_id: string | null
+  state: boolean | number | string | null
+  writable: boolean
+  primary?: boolean
+}
+
+export interface ShareToken {
+  id: string
+  name: string
+  token: string
+  device_ids: string[]
+  created_at: number
+  last_used: number | null
+}
+
+export interface ShareDocs {
+  name: string
+  base_url: string
+  auth: string
+  endpoints: { method: string; path: string; about: string; body?: { commands: { code: string; value: boolean }[] } }[]
+  values: Record<string, string>
+}
+
+export interface ShareDeviceChoice {
+  id: string
+  name: string
+  area: string | null
+  source: string
+  online: boolean | null
+}
+
+export interface ShareView {
+  base_url: string
+  docs: ShareDocs
+  tokens: ShareToken[]
+  devices: ShareDeviceChoice[]
 }
 
 export interface LocalSaveResult {

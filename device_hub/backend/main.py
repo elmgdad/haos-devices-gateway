@@ -12,6 +12,7 @@ from . import store
 from .ha import HAError, HomeAssistant
 from .hotspot import Hotspot
 from .scanner import Scanner
+from .share import Shares
 from .tuya_bridge import LocalBridge
 from .tuya_cloud import TuyaCloud
 from .tuya_local import TuyaLocal
@@ -38,7 +39,8 @@ def load_dev_env():
 
 @web.middleware
 async def guard(request, handler):
-    if store.ADDON and request.remote not in INGRESS_PEERS:
+    shared = request.path == "/api/v1" or request.path.startswith("/api/v1/")
+    if store.ADDON and not shared and request.remote not in INGRESS_PEERS:
         return web.json_response({"error": "Open Device Hub from the Home Assistant sidebar."}, status=403)
     try:
         return await handler(request)
@@ -59,6 +61,7 @@ class Hub:
         self.scanner = Scanner(self.ha, self.cloud, self.tuya_local)
         self.local = LocalBridge(self.ha, self.cloud, self.scanner)
         self.tuya_local.bridge = self.local
+        self.share = Shares(self)
         self.hotspot = Hotspot(self.ha)
         self.zha = Zha(self.ha)
         self.z2m = Z2M(self.ha)
@@ -82,6 +85,7 @@ class Hub:
             return None
 
         mqtt_devices = {}
+        ha_by_id = {ha_device["id"]: ha_device for ha_device in registries["devices"]}
         for ha_device in registries["devices"]:
             for domain, identifier in ha_device.get("identifiers") or []:
                 if domain == "mqtt" and identifier.startswith("devicehub_tuya_"):
@@ -95,6 +99,10 @@ class Hub:
             local = self.local.link_info(device["id"])
             if local:
                 local["ha_device_id"] = mqtt_devices.get(device["id"])
+                placed = ha_by_id.get(local["ha_device_id"]) if local.get("ha_device_id") else None
+                if placed and placed.get("area_id"):
+                    local["area_id"] = placed["area_id"]
+                    local["area"] = registries["areas"].get(placed["area_id"]) or local.get("area")
             device = {**device, "child": bool(device["node_id"]) and not seen.get("ip")}
             entry = find_entry(device, seen.get("ip"))
             drift = []
@@ -314,7 +322,49 @@ class Hub:
                 "ha_device_id": (host.get("ha") or {}).get("device_id"),
                 "tab": "network",
             })
+        by_id = {device["id"]: device for device in registries["devices"]}
+        for row in rows:
+            placed = by_id.get(row.get("ha_device_id") or "")
+            area_id = placed.get("area_id") if placed else None
+            if not area_id and row["key"].startswith("tuya:"):
+                profile = self.local.profiles.get(row["key"].removeprefix("tuya:")) or {}
+                area_id = profile.get("area_id")
+                if area_id and not row.get("area"):
+                    row["area"] = profile.get("area")
+            row["area_id"] = area_id
+            if area_id and registries["areas"].get(area_id):
+                row["area"] = registries["areas"][area_id]
         return {"devices": rows, "areas": registries["areas"]}
+
+    async def remember_area(self, ha_device_id, area_id):
+        devices = await self.ha.call("config/device_registry/list")
+        device = next((item for item in devices or [] if item["id"] == ha_device_id), None)
+        if not device:
+            return
+        areas = await self.ha.call("config/area_registry/list")
+        name = next((item["name"] for item in areas or [] if item["area_id"] == area_id), None)
+        for domain, identifier in device.get("identifiers") or []:
+            if domain == "mqtt" and str(identifier).startswith("devicehub_tuya_"):
+                self.local.set_area(str(identifier).removeprefix("devicehub_tuya_"), area_id, name)
+        self.share.invalidate()
+
+    async def api_base(self):
+        try:
+            info = await self.ha.supervisor("GET", "/network/info")
+        except HAError:
+            info = {}
+        candidates = []
+        for iface in (info or {}).get("interfaces") or []:
+            ipv4 = iface.get("ipv4") or {}
+            for item in ipv4.get("address") or []:
+                raw = item.get("address") if isinstance(item, dict) else str(item)
+                ip = raw.split("/")[0]
+                if not ip or ip.startswith("127.") or ip.startswith("169.254.") or ip.startswith("172.30."):
+                    continue
+                candidates.append((not iface.get("primary"), ip))
+        candidates.sort()
+        host = candidates[0][1] if candidates else "homeassistant.local"
+        return f"http://{host}:8765"
 
     async def status(self):
         async def safe(coro, fallback):
@@ -372,6 +422,27 @@ async def _settings_view(hub: Hub):
     return current
 
 
+def _public_device(item):
+    return {
+        "id": item["id"],
+        "name": item["name"],
+        "area": item.get("area"),
+        "online": item.get("online"),
+        "source": item.get("source"),
+        "controls": [
+            {key: control[key] for key in ("code", "name", "type", "entity_id", "state", "writable")}
+            for control in item["controls"]
+        ],
+    }
+
+
+async def _share_choices(hub: Hub):
+    return [
+        {"id": item["id"], "name": item["name"], "area": item.get("area"), "source": item.get("source"), "online": item.get("online")}
+        for item in await hub.share.catalog()
+    ]
+
+
 def routes(hub: Hub):
     r = web.RouteTableDef()
 
@@ -406,6 +477,15 @@ def routes(hub: Hub):
         items = await hub.ha.call("config/area_registry/list")
         return web.json_response([{"id": a["area_id"], "name": a["name"]} for a in items or []])
 
+    @r.post("/api/areas")
+    async def create_area(request):
+        data = await body(request)
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise RuntimeError("Name the area.")
+        created = await hub.ha.call("config/area_registry/create", name=name)
+        return web.json_response({"id": created["area_id"], "name": created["name"]})
+
     @r.post("/api/ha/devices/{device_id}")
     async def update_device(request):
         data = await body(request)
@@ -414,7 +494,10 @@ def routes(hub: Hub):
             payload["name_by_user"] = (data["name_by_user"] or "").strip() or None
         if "area_id" in data:
             payload["area_id"] = data["area_id"] or None
-        await hub.ha.call("config/device_registry/update", device_id=request.match_info["device_id"], **payload)
+        device_id = request.match_info["device_id"]
+        await hub.ha.call("config/device_registry/update", device_id=device_id, **payload)
+        if "area_id" in data:
+            await hub.remember_area(device_id, data.get("area_id") or None)
         return web.json_response({"ok": True})
 
     @r.get("/api/devices/all")
@@ -451,7 +534,58 @@ def routes(hub: Hub):
 
     @r.get("/api/local")
     async def local_overview(_request):
-        return web.json_response(hub.local.overview())
+        overview = hub.local.overview()
+        catalog = {item["id"]: item for item in await hub.share.catalog()}
+        for device in overview["devices"]:
+            match = catalog.get(f"tuya:{device['id']}")
+            if not match:
+                device["controls"] = []
+                continue
+            device["ha_device_id"] = match.get("ha_device_id")
+            device["area"] = match.get("area") or device.get("area")
+            device["area_id"] = match.get("area_id") or device.get("area_id")
+            device["controls"] = match["controls"]
+        return web.json_response(overview)
+
+    @r.get("/api/share")
+    async def share_panel(_request):
+        return web.json_response({**hub.share.panel(await hub.api_base()), "devices": await _share_choices(hub)})
+
+    @r.post("/api/share")
+    async def share_create(request):
+        data = await body(request)
+        created = hub.share.create(data.get("name"), data.get("device_ids"))
+        return web.json_response(created)
+
+    @r.delete("/api/share/{token_id}")
+    async def share_revoke(request):
+        return web.json_response(hub.share.revoke(request.match_info["token_id"]))
+
+    @r.get("/api/v1")
+    async def share_docs(request):
+        docs = hub.share.public(await hub.api_base())
+        accept = request.headers.get("Accept", "")
+        if "text/html" in accept and not accept.strip().startswith("application/json"):
+            return web.Response(text=hub.share.describe_html(await hub.api_base()), content_type="text/html")
+        return web.json_response(docs)
+
+    @r.get("/api/v1/devices")
+    async def share_devices(request):
+        token = hub.share.require(request)
+        devices = await hub.share.devices_for(token)
+        return web.json_response({"devices": [_public_device(item) for item in devices]})
+
+    @r.get("/api/v1/devices/{device_id}")
+    async def share_device(request):
+        token = hub.share.require(request)
+        return web.json_response(_public_device(await hub.share.device_for(token, request.match_info["device_id"])))
+
+    @r.post("/api/v1/devices/{device_id}/commands")
+    async def share_command(request):
+        token = hub.share.require(request)
+        data = await body(request)
+        device = await hub.share.command(token, request.match_info["device_id"], data.get("commands"))
+        return web.json_response(_public_device(device))
 
     @r.post("/api/local/save")
     async def local_save(request):

@@ -11,8 +11,9 @@ import {
   type ReactNode,
   type SelectHTMLAttributes,
 } from "react"
-import { copyText, cx, SOURCES, sourceColor } from "./lib"
-import type { Source } from "./types"
+import { api } from "./api"
+import { copyText, cx, errorText, SOURCES, sourceColor } from "./lib"
+import type { Area, Source } from "./types"
 
 type Variant = "primary" | "quiet" | "danger" | "ghost"
 
@@ -102,6 +103,95 @@ const inputClass =
 
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={cx(inputClass, className)} />
+}
+
+export function AreaSelect({
+  areas,
+  value,
+  deviceId,
+  onSaved,
+}: {
+  areas: Area[]
+  value: string | null
+  deviceId: string | null
+  onSaved: () => void
+}) {
+  const feedback = useFeedback()
+  const [busy, setBusy] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [name, setName] = useState("")
+  const [added, setAdded] = useState<Area | null>(null)
+  const options = added && !areas.some((area) => area.id === added.id) ? [...areas, added] : areas
+  if (!deviceId) return <span className="text-xs text-muted">Not in Home Assistant yet</span>
+  const assign = async (areaId: string | null) => {
+    setBusy(true)
+    try {
+      await api.updateHaDevice(deviceId, { area_id: areaId })
+      onSaved()
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(false)
+    }
+  }
+  if (creating) {
+    return (
+      <form
+        className="flex min-w-44 gap-1"
+        onSubmit={async (e) => {
+          e.preventDefault()
+          const next = name.trim()
+          if (!next) return
+          setBusy(true)
+          try {
+            const area = await api.createArea(next)
+            setAdded(area)
+            await api.updateHaDevice(deviceId, { area_id: area.id })
+            setCreating(false)
+            setName("")
+            onSaved()
+          } catch (exc) {
+            feedback.fail(errorText(exc))
+          } finally {
+            setBusy(false)
+          }
+        }}
+      >
+        <Input
+          value={name}
+          autoFocus
+          placeholder="Area name"
+          className="h-8 text-xs"
+          onChange={(e) => setName(e.target.value)}
+        />
+        <Button type="submit" variant="primary" busy={busy} className="h-8 px-2">
+          Add
+        </Button>
+        <Button type="button" className="h-8 px-2" onClick={() => setCreating(false)}>
+          Cancel
+        </Button>
+      </form>
+    )
+  }
+  return (
+    <Select
+      value={value ?? ""}
+      disabled={busy}
+      className="h-8 min-w-36 text-xs"
+      onChange={(e) => {
+        if (e.target.value === "__new__") setCreating(true)
+        else void assign(e.target.value || null)
+      }}
+    >
+      <option value="">No area</option>
+      {options.map((area) => (
+        <option key={area.id} value={area.id}>
+          {area.name}
+        </option>
+      ))}
+      <option value="__new__">New area…</option>
+    </Select>
+  )
 }
 
 export function Select({ className, children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {

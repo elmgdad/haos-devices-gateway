@@ -3,12 +3,13 @@ import { useMemo, useState } from "react"
 import { api } from "../api"
 import { cx, SOURCES, sourceColor, usePoll } from "../lib"
 import type { Source, Tab } from "../types"
-import { Empty, Led, Notice, Panel, SearchInput, SourceTag, Td, Th, Toggle } from "../ui"
+import { AreaSelect, Empty, Led, Notice, Panel, SearchInput, SourceTag, Td, Th, Toggle } from "../ui"
 
 const ORDER: Source[] = ["tuya", "tuya_local", "z2m", "zha", "lan"]
 
 export default function AllDevices({ onOpen }: { onOpen: (tab: Tab) => void }) {
   const view = usePoll(api.allDevices, 30000)
+  const areas = usePoll(api.areas)
   const [query, setQuery] = useState("")
   const [hidden, setHidden] = useState<Set<Source>>(new Set())
   const [attention, setAttention] = useState(false)
@@ -99,7 +100,17 @@ export default function AllDevices({ onOpen }: { onOpen: (tab: Tab) => void }) {
                   </td>
                   <Td className="font-medium">{device.name}</Td>
                   <Td className="text-muted">{device.kind}</Td>
-                  <Td>{device.area ?? <span className="text-muted">–</span>}</Td>
+                  <Td>
+                    <AreaSelect
+                      areas={areas.data ?? []}
+                      value={device.area_id}
+                      deviceId={device.ha_device_id}
+                      onSaved={() => {
+                        void view.reload()
+                        void areas.reload()
+                      }}
+                    />
+                  </Td>
                   <Td className="whitespace-nowrap">
                     <span className={cx("inline-flex items-center gap-2", device.warn && "text-bad")}>
                       <Led state={device.warn ? "warn" : device.online === false ? "off" : device.online ? "ok" : "off"} />

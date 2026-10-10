@@ -3,8 +3,8 @@ import { useMemo, useState } from "react"
 import { api } from "../api"
 import { errorText, sourceColor, timeAgo, usePoll } from "../lib"
 import type { ZhaDevice } from "../types"
-import { Badge, Button, Empty, Led, Notice, Panel, SearchInput, Signal, Td, Th, useFeedback } from "../ui"
-import { AreaSelect, RenameCell } from "./Z2mTab"
+import { AreaSelect, Badge, Button, Empty, Led, Notice, Panel, SearchInput, Signal, Td, Th, useFeedback } from "../ui"
+import { RenameCell } from "./Z2mTab"
 
 export default function ZhaTab({ onChanged, z2mRunning }: { onChanged: () => void; z2mRunning: boolean }) {
   const feedback = useFeedback()

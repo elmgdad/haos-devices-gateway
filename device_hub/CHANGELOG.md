@@ -1,3 +1,7 @@
+# 0.1.13
+
+A key from Settings can list and control the devices you choose. The same page documents the API. Each device can be placed in a Home Assistant area, and saved devices show the entity ids automations use.
+
 # 0.1.12
 
 Asking for controls on a device that is not in the Tuya project says so. A device Tuya lists but will not share still explains the Smart Life account.

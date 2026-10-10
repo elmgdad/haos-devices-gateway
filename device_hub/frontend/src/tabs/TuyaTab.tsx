@@ -12,7 +12,7 @@ import {
 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { api } from "../api"
-import { cx, errorText, openInHa, sourceColor, timeAgo, usePoll } from "../lib"
+import { copyText, cx, errorText, openInHa, sourceColor, timeAgo, usePoll } from "../lib"
 import type {
   LocalLink,
   LocalOverview,
@@ -24,6 +24,7 @@ import type {
   TuyaLocalEntry,
 } from "../types"
 import {
+  AreaSelect,
   Badge,
   Button,
   Empty,
@@ -89,6 +90,7 @@ export async function findTuyaOnLan() {
 export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; onChanged: () => void }) {
   const feedback = useFeedback()
   const view = usePoll(() => api.tuya(), 60000)
+  const areas = usePoll(api.areas)
   const [filter, setFilter] = useState<Filter>(focus === "local" ? "local" : "all")
   const [query, setQuery] = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -369,6 +371,17 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
                     </Td>
                     <Td>
                       <LocalBadge link={device.local} />
+                      <div className="mt-1.5">
+                        <AreaSelect
+                          areas={areas.data ?? []}
+                          value={device.local?.area_id ?? device.tuya_local?.area_id ?? null}
+                          deviceId={device.local?.ha_device_id ?? device.tuya_local?.ha_device_id ?? null}
+                          onSaved={() => {
+                            void view.reload()
+                            void areas.reload()
+                          }}
+                        />
+                      </div>
                     </Td>
                     <Td className="text-right">
                       <div className="inline-flex gap-1.5">
@@ -694,9 +707,39 @@ function LinkState({ link }: { link: LocalLink }) {
   )
 }
 
+function AutomationList({ link }: { link: LocalLink }) {
+  const controls = (link.controls ?? []).filter((control) => control.primary && control.entity_id)
+  const extra = (link.controls ?? []).filter((control) => !control.primary).length
+  if (!link.ha_device_id) {
+    return <span className="text-xs text-muted">Shows up in Home Assistant once the link is online.</span>
+  }
+  if (controls.length === 0) {
+    return <span className="text-xs text-muted">Waiting for Home Assistant to add the entities.</span>
+  }
+  return (
+    <div className="max-w-xs">
+      <ul className="space-y-0.5">
+        {controls.slice(0, 6).map((control) => (
+          <li key={control.entity_id} className="flex items-center gap-1">
+            <button
+              className="truncate font-mono text-[11px] text-muted hover:text-ink"
+              title="Copy the entity id for an automation"
+              onClick={() => void copyText(control.entity_id || "")}
+            >
+              {control.entity_id}
+            </button>
+          </li>
+        ))}
+      </ul>
+      {extra > 0 && <p className="mt-1 text-[11px] text-muted">{extra} more settings on the device page</p>}
+    </div>
+  )
+}
+
 function LocalPanel({ devices, onChanged }: { devices: TuyaDevice[]; onChanged: () => void }) {
   const feedback = useFeedback()
   const view = usePoll(() => api.local(), 5000)
+  const areas = usePoll(api.areas)
   const [busy, setBusy] = useState<string | null>(null)
   const [skipped, setSkipped] = useState<LocalSaveResult[]>([])
 
@@ -798,7 +841,7 @@ function LocalPanel({ devices, onChanged }: { devices: TuyaDevice[]; onChanged: 
       {saved.length === 0 ? (
         <p className="px-4 py-4 text-sm text-muted">
           Saving a device keeps its local key, address and data points in Device Hub. Its switches and sensors then show up
-          in Home Assistant and work over your network, without the Tuya cloud.
+          in Home Assistant automations and work over your network, without the Tuya cloud.
         </p>
       ) : (
         <div className="overflow-x-auto">
@@ -808,7 +851,8 @@ function LocalPanel({ devices, onChanged }: { devices: TuyaDevice[]; onChanged: 
                 <Th>Device</Th>
                 <Th>Address</Th>
                 <Th>Link</Th>
-                <Th>Entities</Th>
+                <Th>Area</Th>
+                <Th>Automations</Th>
                 <Th className="text-right">Actions</Th>
               </tr>
             </thead>
@@ -828,7 +872,21 @@ function LocalPanel({ devices, onChanged }: { devices: TuyaDevice[]; onChanged: 
                     <Td>
                       <LinkState link={link} />
                     </Td>
-                    <Td mono>{link.entities}</Td>
+                    <Td>
+                      <AreaSelect
+                        areas={areas.data ?? []}
+                        value={link.area_id ?? null}
+                        deviceId={haId ?? null}
+                        onSaved={() => {
+                          void view.reload()
+                          void areas.reload()
+                          onChanged()
+                        }}
+                      />
+                    </Td>
+                    <Td>
+                      <AutomationList link={link} />
+                    </Td>
                     <Td className="text-right">
                       <div className="inline-flex gap-1.5">
                         {haId && (

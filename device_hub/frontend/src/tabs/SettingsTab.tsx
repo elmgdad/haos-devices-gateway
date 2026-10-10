@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react"
 import { api } from "../api"
-import { errorText, usePoll } from "../lib"
+import { copyText, errorText, usePoll } from "../lib"
 import type { Status } from "../types"
-import { Badge, Button, Field, Input, Panel, Select, useFeedback } from "../ui"
+import { Badge, Button, Field, Input, Notice, Panel, Select, useFeedback } from "../ui"
 
 export default function SettingsTab({ status, onChanged }: { status: Status | null; onChanged: () => void }) {
   const feedback = useFeedback()
@@ -121,6 +121,8 @@ export default function SettingsTab({ status, onChanged }: { status: Status | nu
         </div>
       </Panel>
 
+      <SharePanel />
+
       <Panel title="Connection" className="lg:col-span-2">
         <dl className="grid gap-4 p-4 text-sm sm:grid-cols-3">
           <div>
@@ -142,5 +144,146 @@ export default function SettingsTab({ status, onChanged }: { status: Status | nu
         </dl>
       </Panel>
     </div>
+  )
+}
+
+function SharePanel() {
+  const feedback = useFeedback()
+  const share = usePoll(api.share)
+  const [name, setName] = useState("")
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState<string | null>(null)
+  const data = share.data
+  const docs = data?.docs
+
+  const toggle = (id: string) =>
+    setPicked((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const create = async () => {
+    setBusy("create")
+    try {
+      const created = await api.createShare(name, [...picked])
+      setName("")
+      setPicked(new Set())
+      await share.reload()
+      if (await copyText(created.token)) feedback.ok(`Created “${created.name}” and copied the key.`)
+      else feedback.ok(`Created “${created.name}”. Copy the key below.`)
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const revoke = async (id: string, label: string) => {
+    const ok = await feedback.confirm({
+      title: `Revoke ${label}?`,
+      body: "Apps using this key lose access immediately. Devices themselves are not changed.",
+      action: "Revoke",
+      danger: true,
+    })
+    if (!ok) return
+    setBusy(id)
+    try {
+      await api.revokeShare(id)
+      await share.reload()
+      feedback.ok(`Revoked ${label}.`)
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Panel title="Share" className="lg:col-span-2">
+      <div className="grid gap-6 p-4 lg:grid-cols-2">
+        <div className="space-y-4 text-sm">
+          <p>
+            Give another app a key. It can list the devices you pick and change the same controls Home Assistant uses in
+            automations. The key cannot see local keys or your Tuya secret.
+          </p>
+          {data && (
+            <p>
+              Base URL <button className="font-mono text-xs hover:underline" onClick={() => void copyText(data.base_url)}>{data.base_url}</button>
+            </p>
+          )}
+          <Field label="Key name" hint="For example, the phone or app you are handing it to.">
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Living room display" />
+          </Field>
+          <div>
+            <p className="mb-1 text-sm font-medium">Devices</p>
+            <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border border-line p-2">
+              {(data?.devices ?? []).length === 0 && <p className="text-xs text-muted">No devices are in Home Assistant yet.</p>}
+              {(data?.devices ?? []).map((device) => (
+                <label key={device.id} className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={picked.has(device.id)} onChange={() => toggle(device.id)} />
+                  <span className="min-w-0 flex-1 truncate">{device.name}</span>
+                  <span className="text-xs text-muted">{device.area || device.source}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <Button variant="primary" busy={busy === "create"} onClick={create}>
+            Create key
+          </Button>
+          {(data?.tokens ?? []).length > 0 && (
+            <ul className="space-y-3 border-t border-line pt-3">
+              {data!.tokens.map((token) => (
+                <li key={token.id} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{token.name}</span>
+                    <Button variant="danger" className="h-8" busy={busy === token.id} onClick={() => revoke(token.id, token.name)}>
+                      Revoke
+                    </Button>
+                  </div>
+                  <button className="block max-w-full truncate font-mono text-xs text-muted hover:text-ink" onClick={() => void copyText(token.token)}>
+                    {token.token}
+                  </button>
+                  <p className="text-xs text-muted">{token.device_ids.length} devices</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="space-y-3 text-sm">
+          <p className="font-medium">How to call it</p>
+          {docs ? (
+            <>
+              <p className="text-muted">
+                Send <span className="font-mono text-xs">{docs.auth}</span> on every request. Opening the base URL in a browser shows this page too.
+              </p>
+              <pre className="overflow-x-auto rounded-md bg-sunk p-3 font-mono text-xs">{`curl -H "Authorization: Bearer dh_your_key" \\\n  ${docs.base_url}/devices`}</pre>
+              {docs.endpoints.map((item) => (
+                <div key={item.method + item.path}>
+                  <p className="font-mono text-xs">
+                    {item.method} {item.path}
+                  </p>
+                  <p className="text-muted">{item.about}</p>
+                </div>
+              ))}
+              <p className="font-medium">Values</p>
+              <ul className="space-y-1 text-muted">
+                {Object.entries(docs.values).map(([kind, text]) => (
+                  <li key={kind}>
+                    <span className="text-ink">{kind}.</span> {text}
+                  </li>
+                ))}
+              </ul>
+              {docs.endpoints.some((item) => item.body) && (
+                <pre className="overflow-x-auto rounded-md bg-sunk p-3 font-mono text-xs">{`{"commands": [{"code": "switch_1", "value": true}]}`}</pre>
+              )}
+            </>
+          ) : (
+            <Notice>Loading the API description.</Notice>
+          )}
+        </div>
+      </div>
+    </Panel>
   )
 }

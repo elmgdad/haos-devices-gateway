@@ -138,6 +138,8 @@ class LocalBridge:
                 "last_seen": None,
                 "entities": len(profile["dps"]),
                 "saved_at": profile.get("saved_at"),
+                "area_id": profile.get("area_id"),
+                "area": profile.get("area"),
             })
         devices.sort(key=lambda item: item["name"].lower())
         return {"mqtt": self.mqtt.info(), "devices": devices, "last_results": self.last_results}
@@ -214,6 +216,8 @@ class LocalBridge:
             "product_id": device.get("product_id") or "",
             "model": device.get("model") or "",
             "dps": points,
+            "area_id": previous.get("area_id"),
+            "area": previous.get("area"),
             "saved_at": time.time(),
         }
 
@@ -257,6 +261,17 @@ class LocalBridge:
             self.mqtt.publish(_availability_topic(device_id), "", retain=True)
         self.last_results = [r for r in self.last_results if r["id"] != device_id]
         return self.overview()
+
+    def set_area(self, device_id, area_id, area_name):
+        profile = self.profiles.get(device_id)
+        if not profile:
+            return False
+        with self._lock:
+            profile["area_id"] = area_id or None
+            profile["area"] = area_name or None
+            self._persist()
+        self._announce(profile)
+        return True
 
     def note_address(self, device_id, ip, version):
         profile = self.profiles.get(device_id)
@@ -409,6 +424,8 @@ class _Link:
             "last_seen": self.last_seen,
             "entities": len(self.profile["dps"]),
             "saved_at": self.profile.get("saved_at"),
+            "area_id": self.profile.get("area_id"),
+            "area": self.profile.get("area"),
         }
 
     def start(self):
@@ -856,6 +873,8 @@ def _discovery(profile):
     }
     if profile.get("product_id"):
         device["model_id"] = profile["product_id"]
+    if profile.get("area"):
+        device["suggested_area"] = profile["area"]
     entries = []
     for point in profile["dps"]:
         code, kind, values, writable = point["code"], point["type"], point["values"], point["writable"]

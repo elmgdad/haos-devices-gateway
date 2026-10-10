@@ -2,8 +2,8 @@ import { ExternalLink, Pencil, Play, RotateCw, Square, Trash2, Wrench } from "lu
 import { useEffect, useMemo, useState } from "react"
 import { api } from "../api"
 import { errorText, openInHa, sourceColor, timeAgo, usePoll } from "../lib"
-import type { Area, Z2mDevice } from "../types"
-import { Badge, Button, Empty, Input, Led, Notice, Panel, SearchInput, Select, Signal, Td, Th, useFeedback } from "../ui"
+import type { Z2mDevice } from "../types"
+import { AreaSelect, Badge, Button, Empty, Input, Led, Notice, Panel, SearchInput, Signal, Td, Th, useFeedback } from "../ui"
 
 export function useCountdown(endMs: number | null) {
   const [now, setNow] = useState(Date.now())
@@ -15,47 +15,6 @@ export function useCountdown(endMs: number | null) {
   if (!endMs) return null
   const left = Math.max(0, Math.round((endMs - now) / 1000))
   return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`
-}
-
-export function AreaSelect({
-  areas,
-  value,
-  deviceId,
-  onSaved,
-}: {
-  areas: Area[]
-  value: string | null
-  deviceId: string | null
-  onSaved: () => void
-}) {
-  const feedback = useFeedback()
-  const [busy, setBusy] = useState(false)
-  if (!deviceId) return <span className="text-xs text-muted">not in HA</span>
-  return (
-    <Select
-      value={value ?? ""}
-      disabled={busy}
-      className="h-8 min-w-36 text-xs"
-      onChange={async (e) => {
-        setBusy(true)
-        try {
-          await api.updateHaDevice(deviceId, { area_id: e.target.value || null })
-          onSaved()
-        } catch (exc) {
-          feedback.fail(errorText(exc))
-        } finally {
-          setBusy(false)
-        }
-      }}
-    >
-      <option value="">No area</option>
-      {areas.map((area) => (
-        <option key={area.id} value={area.id}>
-          {area.name}
-        </option>
-      ))}
-    </Select>
-  )
 }
 
 export function RenameCell({ name, onSave }: { name: string; onSave: (next: string) => Promise<void> }) {
