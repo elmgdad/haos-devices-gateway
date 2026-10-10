@@ -1,3 +1,7 @@
+# 0.1.18
+
+Shared controls without their own name are labeled by what they are, such as Cover or Door.
+
 # 0.1.17
 
 A shared device that is not in Home Assistant no longer picks up unrelated entities.

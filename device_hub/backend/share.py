@@ -295,15 +295,17 @@ a {{ color: #8ec8ff; }}
             domain = entity["entity_id"].split(".", 1)[0]
             if domain in ("update", "event"):
                 continue
+            attributes = index["attributes"].get(entity["entity_id"]) or {}
             controls.append({
                 "code": entity["entity_id"],
-                "name": entity.get("name") or entity.get("original_name") or entity["entity_id"],
+                "name": entity.get("name") or entity.get("original_name")
+                or _label(attributes.get("device_class") or domain),
                 "type": domain,
                 "entity_id": entity["entity_id"],
                 "state": index["states"].get(entity["entity_id"]),
                 "writable": domain in WRITABLE,
                 "primary": entity.get("entity_category") not in ("config", "diagnostic"),
-                **_entity_limits(domain, index["attributes"].get(entity["entity_id"]) or {}),
+                **_entity_limits(domain, attributes),
             })
         return controls
 

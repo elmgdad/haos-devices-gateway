@@ -37,7 +37,7 @@ async def main():
             json={"entity_id": entity},
         ) as response:
             response.raise_for_status()
-        for _ in range(8):
+        for _ in range(20):
             await asyncio.sleep(2)
             async with session.get(base + "/api/states/" + entity, headers=headers) as response:
                 state = await response.json()
