@@ -136,6 +136,8 @@ export interface IrBlaster {
 export interface IrView {
   blasters: IrBlaster[]
   remotes: IrRemote[]
+  cloud_ir: boolean | null
+  cloud_ir_help: string | null
 }
 
 export interface ShareToken {

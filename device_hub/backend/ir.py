@@ -26,6 +26,12 @@ DP_SEND = "201"
 DP_LEARNED = "202"
 LEARN_SECONDS = 20
 AC_POLL = 600
+NOT_SUBSCRIBED = 28841101
+SERVICE_OFF = (
+    "Tuya's IR service is off for this cloud project, so Tuya drops remote keys without sending them. "
+    "On iot.tuya.com open Cloud, your project, Service API, Go to Authorize, and add IR Control Hub Open Service. "
+    "Or learn the button: Device Hub then sends it on your network."
+)
 AC_MODES = ["cool", "heat", "auto", "fan_only", "dry"]
 AC_FANS = ["auto", "low", "medium", "high"]
 AC_MIN, AC_MAX = 16, 30
@@ -52,6 +58,39 @@ def _real_code(value):
     return isinstance(value, str) and len(value) > 24
 
 
+def _sent_ir(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return False
+    return isinstance(value, dict) and value.get("control") == "send_ir" and bool(value.get("key1"))
+
+
+def _learned(dp, value):
+    if value is None:
+        return None
+    if dp == DP_SEND:
+        return {"payload": json.loads(value) if isinstance(value, str) else value}
+    return {"code": value}
+
+
+def _norm(text):
+    return re.sub(r"[\s_]+", "", str(text or "").lower())
+
+
+KEY_ALIASES = {
+    "power": {"power", "poweronoff", "onoff", "switch"},
+    "volume+": {"volume+", "volumeup", "vol+"},
+    "volume-": {"volume-", "volumedown", "vol-"},
+    "channel+": {"channel+", "channelup", "ch+"},
+    "channel-": {"channel-", "channeldown", "ch-"},
+    "ok": {"ok", "confirm", "enter"},
+    "home": {"home", "homepage"},
+    "back": {"back", "return"},
+}
+
+
 def _slug(text):
     text = str(text).lower().replace("+", " plus ").replace("-", " minus ")
     return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or "key"
@@ -72,6 +111,9 @@ class IrRemotes:
         self._parents = {}
         self._parents_at = 0.0
         self._keys = {}
+        self._hub_keys = {}
+        self.service = None
+        self._service_at = 0.0
         self._learning = set()
         self._send_locks = {}
         self._announced = {}
@@ -101,6 +143,7 @@ class IrRemotes:
 
     async def refresh(self):
         await asyncio.to_thread(self._load_parents)
+        await asyncio.to_thread(self._check_service)
         for remote in self._cloud_remotes():
             if remote["kind"] == "ac":
                 if time.time() - (self.ac.get(remote["id"]) or {}).get("read_at", 0) > AC_POLL:
@@ -114,7 +157,12 @@ class IrRemotes:
     def list(self):
         items = [self._view(remote) for remote in self._all()]
         items.sort(key=lambda item: item["name"].lower())
-        return {"blasters": self._blaster_views(), "remotes": items}
+        return {
+            "blasters": self._blaster_views(),
+            "remotes": items,
+            "cloud_ir": self.service,
+            "cloud_ir_help": SERVICE_OFF if self.service is False else None,
+        }
 
     def list_one(self, remote_id):
         return self._view(self.get(remote_id))
@@ -260,10 +308,13 @@ class IrRemotes:
         finally:
             self._learning.discard(blaster_id)
         if not code:
-            raise RuntimeError(f"No button press reached the blaster in {LEARN_SECONDS} seconds. Point the remote at it and try again.")
+            raise RuntimeError(
+                f"No button press reached the blaster in {LEARN_SECONDS} seconds. "
+                "Point the remote at it, or press the key in Smart Life, and try again."
+            )
         with self._lock:
             items = [item for item in self.buttons.get(remote_id) or [] if item["name"] != name]
-            items.append({"name": name[:40], "code": code, "learned_at": time.time()})
+            items.append({"name": name[:40], **code, "learned_at": time.time()})
             self.buttons[remote_id] = items
             self._persist()
         self.announce()
@@ -282,32 +333,31 @@ class IrRemotes:
     def _press(self, remote, code):
         learned = next((item for item in self.buttons.get(remote["id"]) or [] if item["name"] == code), None)
         if learned:
-            self._send_code(remote["blaster_id"], learned["code"])
+            self._send_learned(remote["blaster_id"], learned)
             return
         if remote["source"] != "cloud":
             raise RuntimeError(f"{code} is not learned on this remote.")
         if code not in (self._keys.get(remote["id"]) or self._cloud_keys(remote["id"])):
             raise RuntimeError(f"{code} is not a key on {remote['name']}.")
-        self._cloud_send(remote["id"], [{"code": code, "value": code}])
+        self._require_service()
+        key = self._hub_key(remote, code)
+        self._hub_request(
+            "POST",
+            f"/v2.0/infrareds/{remote['blaster_id']}/remotes/{remote['id']}/raw/command",
+            {"category_id": key["category_id"], "key_id": key["key_id"], "key": key["key"]},
+        )
 
     def _set_ac(self, remote, field, value):
         state = self._ac_state(remote["id"])
-        commands = []
         if field == "power":
-            on = value in (True, 1, "1", "true", "on", "ON")
-            commands.append({"code": "PowerOn" if on else "PowerOff", "value": "PowerOn" if on else "PowerOff"})
-            state["power"] = on
+            state["power"] = value in (True, 1, "1", "true", "on", "ON")
         elif field == "mode":
             if value == "off":
-                commands.append({"code": "PowerOff", "value": "PowerOff"})
                 state["power"] = False
-            else:
-                if value not in AC_MODES:
-                    raise RuntimeError(f"Mode must be one of {', '.join(AC_MODES)} or off.")
-                if not state.get("power"):
-                    commands.append({"code": "PowerOn", "value": "PowerOn"})
-                commands.append({"code": "M", "value": AC_MODES.index(value)})
+            elif value in AC_MODES:
                 state.update(power=True, mode=value)
+            else:
+                raise RuntimeError(f"Mode must be one of {', '.join(AC_MODES)} or off.")
         elif field == "temp":
             try:
                 temp = int(round(float(value)))
@@ -315,31 +365,86 @@ class IrRemotes:
                 raise RuntimeError(f"Temperature must be a number from {AC_MIN} to {AC_MAX}.") from exc
             if not AC_MIN <= temp <= AC_MAX:
                 raise RuntimeError(f"Temperature must be from {AC_MIN} to {AC_MAX}.")
-            commands.append({"code": "T", "value": temp})
             state["temp"] = temp
         elif field == "fan":
             if value not in AC_FANS:
                 raise RuntimeError(f"Fan must be one of {', '.join(AC_FANS)}.")
-            commands.append({"code": "F", "value": AC_FANS.index(value)})
             state["fan"] = value
-        for command in commands:
-            self._cloud_send(remote["id"], [command])
+        self._require_service()
+        self._hub_request(
+            "POST",
+            f"/v2.0/infrareds/{remote['blaster_id']}/air-conditioners/{remote['id']}/scenes/command",
+            {
+                "power": 1 if state["power"] else 0,
+                "mode": AC_MODES.index(state["mode"]),
+                "temp": state["temp"],
+                "wind": AC_FANS.index(state["fan"]),
+            },
+        )
         with self._lock:
             self.ac[remote["id"]] = {**state, "at": time.time(), "read_at": (self.ac.get(remote["id"]) or {}).get("read_at", 0)}
             self._persist()
         self._publish_ac(remote["id"])
 
-    def _cloud_send(self, device_id, commands):
+    def _hub_request(self, method, url, body=None):
         cloud = self.hub.cloud._cloud
         if cloud is None:
             raise RuntimeError("Sign in to the Tuya cloud project first. Tuya remotes are sent through it.")
-        result = cloud.cloudrequest(f"/v1.0/iot-03/devices/{device_id}/commands", action="POST", post={"commands": commands})
-        if not isinstance(result, dict) or not result.get("success"):
-            message = result.get("msg") if isinstance(result, dict) else None
-            raise RuntimeError(str(message or "Tuya did not accept the command."))
+        result = cloud.cloudrequest(url, action=method, post=body)
+        if isinstance(result, dict) and result.get("success"):
+            self.service, self._service_at = True, time.monotonic()
+            return result.get("result")
+        if isinstance(result, dict) and result.get("code") == NOT_SUBSCRIBED:
+            self.service, self._service_at = False, time.monotonic()
+            raise RuntimeError(SERVICE_OFF)
+        message = result.get("msg") if isinstance(result, dict) else None
+        raise RuntimeError(str(message or "Tuya did not send the IR command."))
 
-    def _send_code(self, blaster_id, code):
-        payload = json.dumps({"control": "send_ir", "head": "", "key1": "1" + code, "type": 0, "delay": 300})
+    def _require_service(self):
+        if self.service is False and time.monotonic() - self._service_at < 60:
+            raise RuntimeError(SERVICE_OFF)
+        if self.service is not True:
+            self._check_service(force=True)
+        if self.service is False:
+            raise RuntimeError(SERVICE_OFF)
+
+    def _check_service(self, force=False):
+        if self.hub.cloud._cloud is None:
+            return
+        if not force and self.service is not None and time.monotonic() - self._service_at < 600:
+            return
+        blaster = next((remote["blaster_id"] for remote in self._cloud_remotes() if remote["blaster_id"]), None)
+        if not blaster:
+            return
+        result = self.hub.cloud._cloud.cloudrequest(f"/v2.0/infrareds/{blaster}/remotes")
+        if isinstance(result, dict) and result.get("success"):
+            self.service = True
+        elif isinstance(result, dict) and result.get("code") == NOT_SUBSCRIBED:
+            self.service = False
+        self._service_at = time.monotonic()
+
+    def _hub_key(self, remote, code):
+        keys = self._hub_keys.get(remote["id"])
+        if keys is None:
+            result = self._hub_request("GET", f"/v2.0/infrareds/{remote['blaster_id']}/remotes/{remote['id']}/keys") or {}
+            keys = [
+                {**item, "category_id": item.get("category_id") or result.get("category_id")}
+                for item in result.get("key_list") or []
+            ]
+            self._hub_keys[remote["id"]] = keys
+        wanted = KEY_ALIASES.get(_norm(code), {_norm(code)})
+        for item in keys:
+            if {_norm(item.get("key")), _norm(item.get("key_name"))} & wanted:
+                return item
+        raise RuntimeError(f"Tuya has no {code} key for {remote['name']}.")
+
+    def _send_learned(self, blaster_id, item):
+        if item.get("payload"):
+            self._send_payload(blaster_id, json.dumps(item["payload"]))
+        else:
+            self._send_payload(blaster_id, json.dumps({"control": "send_ir", "head": "", "key1": "1" + item["code"], "type": 0, "delay": 300}))
+
+    def _send_payload(self, blaster_id, payload):
         link = self.hub.local.links.get(blaster_id)
         if link and link.state == "online":
             link.send({DP_SEND: payload})
@@ -353,6 +458,7 @@ class IrRemotes:
                 device.close()
 
     def _learn(self, blaster_id):
+        """A code heard from a physical remote (202), or one Smart Life just sent through the blaster (201)."""
         study = json.dumps({"control": "study"})
         leave = json.dumps({"control": "study_exit"})
         link = self.hub.local.links.get(blaster_id)
@@ -360,7 +466,8 @@ class IrRemotes:
             link.send({DP_SEND: leave})
             link.send({DP_SEND: study})
             try:
-                return link.wait_for_dp(DP_LEARNED, _real_code, LEARN_SECONDS)
+                dp, value = link.wait_for_any({DP_LEARNED: _real_code, DP_SEND: _sent_ir}, LEARN_SECONDS)
+                return _learned(dp, value)
             finally:
                 link.send({DP_SEND: leave})
         with self._send_lock(blaster_id):
@@ -372,10 +479,11 @@ class IrRemotes:
                 deadline = time.monotonic() + LEARN_SECONDS
                 while time.monotonic() < deadline:
                     reply = device.receive()
-                    dps = reply.get("dps") if isinstance(reply, dict) else None
-                    value = (dps or {}).get(DP_LEARNED)
-                    if _real_code(value):
-                        return value
+                    dps = (reply.get("dps") if isinstance(reply, dict) else None) or {}
+                    if _real_code(dps.get(DP_LEARNED)):
+                        return _learned(DP_LEARNED, dps[DP_LEARNED])
+                    if _sent_ir(dps.get(DP_SEND)):
+                        return _learned(DP_SEND, dps[DP_SEND])
                 return None
             finally:
                 try:

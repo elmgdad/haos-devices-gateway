@@ -457,17 +457,20 @@ class _Link:
         self._commands.put(values)
         self._wake()
 
-    def wait_for_dp(self, dp, accept, timeout):
-        """Block until `accept(value)` holds for a fresh report of `dp`. Clears the old value first."""
+    def wait_for_any(self, accepts, timeout):
+        """Block until a fresh report of one of the data points passes its check. Clears the old values first."""
         deadline = time.monotonic() + timeout
         with self._changed:
-            self.dps.pop(dp, None)
-            while not accept(self.dps.get(dp)):
+            for dp in accepts:
+                self.dps.pop(dp, None)
+            while True:
+                for dp, accept in accepts.items():
+                    if accept(self.dps.get(dp)):
+                        return dp, self.dps.get(dp)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    return None
+                    return None, None
                 self._changed.wait(remaining)
-            return self.dps.get(dp)
 
     def wait_for(self, values, timeout):
         deadline = time.monotonic() + timeout

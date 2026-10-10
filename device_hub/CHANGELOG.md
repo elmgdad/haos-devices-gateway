@@ -1,3 +1,7 @@
+# 0.1.20
+
+Tuya TV and AC remotes are sent through Tuya's IR service. When that service is off for the cloud project, Device Hub says so instead of reporting success. Learning a button also accepts a key pressed in the Smart Life app.
+
 # 0.1.19
 
 Reset, limit and calibration controls are no longer listed with a shared device's main controls.

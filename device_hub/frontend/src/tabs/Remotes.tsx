@@ -164,7 +164,8 @@ function LearnDialog({
         </Field>
         {listening ? (
           <p className="rounded-md bg-src-lan/10 px-3 py-2">
-            Point your remote at <b>{remote?.blaster_name || "the blaster"}</b> and press the button once now.
+            Point your remote at <b>{remote?.blaster_name || "the blaster"}</b> and press the button once now. You can also
+            press the same key on this remote in the Smart Life app.
           </p>
         ) : (
           <p className="text-muted">
@@ -391,6 +392,19 @@ export function RemotesPanel({ onlyId }: { onlyId?: string }) {
       }
     >
       {view.error && <p className="border-b border-line px-4 py-2.5 text-sm text-bad">{view.error}</p>}
+      {data?.cloud_ir === false && (
+        <div className="border-b border-line px-4 py-3 text-sm">
+          <p className="font-medium text-bad">Tuya remote keys are not reaching your TV and AC.</p>
+          <p className="mt-1 text-muted">
+            Tuya&apos;s IR service is off for this cloud project, so Tuya drops the keys without sending them. On{" "}
+            <a className="underline" href="https://iot.tuya.com" target="_blank" rel="noreferrer">
+              iot.tuya.com
+            </a>{" "}
+            open Cloud, your project, Service API, Go to Authorize, and add <b>IR Control Hub Open Service</b>. Or press Learn
+            button on a remote: learned buttons are sent on your network and work without the cloud.
+          </p>
+        </div>
+      )}
       {body}
     </Panel>
   )
