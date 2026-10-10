@@ -538,6 +538,7 @@ async def create_app():
     async def on_startup(_app):
         app["ha_task"] = asyncio.create_task(hub.ha.run_forever())
         app["tuya_task"] = asyncio.create_task(hub.cloud.restore())
+        app["hotspot_task"] = asyncio.create_task(hub.hotspot.ensure())
 
     async def on_cleanup(_app):
         app["ha_task"].cancel()

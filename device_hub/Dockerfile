@@ -1,6 +1,6 @@
 FROM python:3.13-alpine
 
-RUN apk add --no-cache arp-scan networkmanager-cli
+RUN apk add --no-cache arp-scan networkmanager-cli dnsmasq
 
 WORKDIR /app
 COPY requirements.txt .
