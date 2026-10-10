@@ -50,8 +50,13 @@ KEY_NAMES = {
     "Home": "Home",
     "Menu": "Menu",
     "-/--": "Digits",
+    "mute": "Mute",
+    "input": "Input",
 }
-PRIMARY_KEYS = ["Power", "Volume+", "Volume-", "Channel+", "Channel-", "Up", "Down", "Left", "Right", "OK", "Back", "Home", "Menu"]
+PRIMARY_KEYS = [
+    "Power", "Volume+", "Volume-", "mute", "Channel+", "Channel-", "Up", "Down", "Left", "Right", "OK",
+    "Back", "Home", "Menu", "input",
+]
 
 
 def _real_code(value):
@@ -73,6 +78,11 @@ def _learned(dp, value):
     if dp == DP_SEND:
         return {"payload": json.loads(value) if isinstance(value, str) else value}
     return {"code": value}
+
+
+def _pretty(text):
+    text = str(text).replace("_", " ").strip()
+    return text[:1].upper() + text[1:] if text else text
 
 
 def _norm(text):
@@ -148,6 +158,11 @@ class IrRemotes:
             if remote["kind"] == "ac":
                 if time.time() - (self.ac.get(remote["id"]) or {}).get("read_at", 0) > AC_POLL:
                     await asyncio.to_thread(self._read_ac, remote["id"])
+            elif self.service:
+                try:
+                    await asyncio.to_thread(self._load_hub_keys, remote)
+                except RuntimeError as exc:
+                    _LOGGER.warning("Could not read the keys of %s: %s", remote["name"], exc)
             else:
                 await asyncio.to_thread(self._cloud_keys, remote["id"])
         self.announce()
@@ -237,19 +252,31 @@ class IrRemotes:
             view["ac"] = {**self._ac_state(remote["id"]), "modes": AC_MODES, "fans": AC_FANS, "min": AC_MIN, "max": AC_MAX}
         return view
 
+    def _key_list(self, remote):
+        """(code, Tuya's label) for each key: the IR service's full list once it is on, else the standard set."""
+        hub = self._hub_keys.get(remote["id"])
+        if hub:
+            return [(item["key"], item.get("key_name")) for item in hub if item.get("key")]
+        return [(code, None) for code in self._keys.get(remote["id"]) or []]
+
     def _keys_of(self, remote):
         keys = []
         learned = {item["name"] for item in self.buttons.get(remote["id"]) or []}
         if remote["source"] == "cloud" and remote["kind"] == "keys":
-            for code in self._keys.get(remote["id"]) or []:
+            slugs = set()
+            for position, (code, label) in enumerate(self._key_list(remote)):
+                if _slug(code) in slugs:
+                    continue
+                slugs.add(_slug(code))
                 keys.append({
                     "code": code,
-                    "name": KEY_NAMES.get(code, code),
+                    "name": KEY_NAMES.get(code) or (code if code.isdigit() else _pretty(label or code)),
                     "primary": code in PRIMARY_KEYS,
                     "local": code in learned,
+                    "position": position,
                 })
             order = {code: index for index, code in enumerate(PRIMARY_KEYS)}
-            keys.sort(key=lambda key: (not key["primary"], order.get(key["code"], 99), key["code"]))
+            keys.sort(key=lambda key: (not key["primary"], order.get(key["code"], 99), key.pop("position")))
         cloud_codes = {key["code"] for key in keys}
         for item in self.buttons.get(remote["id"]) or []:
             if item["name"] not in cloud_codes:
@@ -337,8 +364,6 @@ class IrRemotes:
             return
         if remote["source"] != "cloud":
             raise RuntimeError(f"{code} is not learned on this remote.")
-        if code not in (self._keys.get(remote["id"]) or self._cloud_keys(remote["id"])):
-            raise RuntimeError(f"{code} is not a key on {remote['name']}.")
         self._require_service()
         key = self._hub_key(remote, code)
         self._hub_request(
@@ -423,7 +448,7 @@ class IrRemotes:
             self.service = False
         self._service_at = time.monotonic()
 
-    def _hub_key(self, remote, code):
+    def _load_hub_keys(self, remote):
         keys = self._hub_keys.get(remote["id"])
         if keys is None:
             result = self._hub_request("GET", f"/v2.0/infrareds/{remote['blaster_id']}/remotes/{remote['id']}/keys") or {}
@@ -432,6 +457,13 @@ class IrRemotes:
                 for item in result.get("key_list") or []
             ]
             self._hub_keys[remote["id"]] = keys
+        return keys
+
+    def _hub_key(self, remote, code):
+        keys = self._load_hub_keys(remote)
+        exact = next((item for item in keys if item.get("key") == code), None)
+        if exact:
+            return exact
         wanted = KEY_ALIASES.get(_norm(code), {_norm(code)})
         for item in keys:
             if {_norm(item.get("key")), _norm(item.get("key_name"))} & wanted:

@@ -1,3 +1,7 @@
+# 0.1.21
+
+With Tuya's IR service on, each TV remote shows every key Tuya has for it, including mute and input.
+
 # 0.1.20
 
 Tuya TV and AC remotes are sent through Tuya's IR service. When that service is off for the cloud project, Device Hub says so instead of reporting success. Learning a button also accepts a key pressed in the Smart Life app.
