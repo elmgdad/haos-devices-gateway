@@ -66,6 +66,7 @@ class LocalBridge:
         self.mqtt = _Mqtt(self._on_mqtt_connect, self._on_mqtt_message)
         self._lock = threading.RLock()
         self._mqtt_task = None
+        self.extensions = []
 
     async def start(self):
         saved = store.load(STORE) or {}
@@ -342,12 +343,19 @@ class LocalBridge:
         self.mqtt.subscribe(f"{PREFIX}/tuya/+/set/+")
         self.mqtt.subscribe(f"{DISCOVERY}/status")
         self._announce_all()
+        for extension in self.extensions:
+            extension.on_mqtt_connect()
 
     def _on_mqtt_message(self, topic, payload):
         if topic == f"{DISCOVERY}/status":
             if payload.strip().lower() == "online":
                 self._announce_all()
+                for extension in self.extensions:
+                    extension.on_mqtt_connect()
             return
+        for extension in self.extensions:
+            if extension.on_mqtt_message(topic, payload):
+                return
         parts = topic.split("/")
         if len(parts) != 5 or parts[1] != "tuya" or parts[3] != "set":
             return
@@ -448,6 +456,18 @@ class _Link:
     def send(self, values):
         self._commands.put(values)
         self._wake()
+
+    def wait_for_dp(self, dp, accept, timeout):
+        """Block until `accept(value)` holds for a fresh report of `dp`. Clears the old value first."""
+        deadline = time.monotonic() + timeout
+        with self._changed:
+            self.dps.pop(dp, None)
+            while not accept(self.dps.get(dp)):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._changed.wait(remaining)
+            return self.dps.get(dp)
 
     def wait_for(self, values, timeout):
         deadline = time.monotonic() + timeout

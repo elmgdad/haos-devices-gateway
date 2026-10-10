@@ -42,6 +42,7 @@ import {
   useFeedback,
 } from "../ui"
 import { AddDialog, BulkAddDialog, targetFrom, type AddTarget } from "./AddDialog"
+import { RemotesPanel } from "./Remotes"
 
 type Filter = "all" | "local" | "missing" | "attention"
 
@@ -96,6 +97,7 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [adding, setAdding] = useState<AddTarget | null>(null)
   const [controlling, setControlling] = useState<TuyaDevice | null>(null)
+  const [remote, setRemote] = useState<TuyaDevice | null>(null)
   const [bulk, setBulk] = useState<TuyaDevice[] | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -239,6 +241,8 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
       )}
 
       <LocalPanel devices={data.devices} onChanged={() => refresh()} />
+
+      <RemotesPanel />
 
       <Panel
         title={
@@ -385,7 +389,10 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
                     </Td>
                     <Td className="text-right">
                       <div className="inline-flex gap-1.5">
-                        <Button icon={<SlidersHorizontal className="size-4" />} onClick={() => setControlling(device)}>
+                        <Button
+                          icon={<SlidersHorizontal className="size-4" />}
+                          onClick={() => (device.category.startsWith("infrared_") ? setRemote(device) : setControlling(device))}
+                        >
                           Control
                         </Button>
                         {!device.tuya_local && (
@@ -452,6 +459,9 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
       )}
 
       <ControlDialog device={controlling} onClose={() => setControlling(null)} onSaved={() => refresh()} />
+      <Modal open={remote !== null} title={remote ? remote.name : "Remote"} onClose={() => setRemote(null)} wide>
+        {remote && <RemotesPanel onlyId={remote.id} />}
+      </Modal>
       <AddDialog target={adding} gateways={data.gateways} onClose={() => setAdding(null)} onAdded={() => refresh()} />
       <BulkAddDialog
         devices={bulk}

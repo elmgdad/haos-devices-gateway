@@ -92,6 +92,52 @@ export interface DeviceControl {
   primary?: boolean
 }
 
+export interface IrKey {
+  code: string
+  name: string
+  primary: boolean
+  local: boolean
+}
+
+export interface IrAc {
+  power: boolean
+  mode: string
+  temp: number
+  fan: string
+  modes: string[]
+  fans: string[]
+  min: number
+  max: number
+}
+
+export interface IrRemote {
+  id: string
+  name: string
+  kind: "ac" | "keys"
+  source: "cloud" | "learned"
+  blaster_id: string
+  blaster_name: string
+  keys: IrKey[]
+  learned: { name: string }[]
+  ac: IrAc | null
+  ha_device_id?: string | null
+  area_id?: string | null
+  area?: string | null
+}
+
+export interface IrBlaster {
+  id: string
+  name: string
+  ip: string | null
+  linked: boolean
+  learning: boolean
+}
+
+export interface IrView {
+  blasters: IrBlaster[]
+  remotes: IrRemote[]
+}
+
 export interface ShareToken {
   id: string
   name: string

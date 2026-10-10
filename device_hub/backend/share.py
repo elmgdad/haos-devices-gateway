@@ -5,6 +5,7 @@ The panel API stays inside Home Assistant. This one listens on the Pi
 """
 
 import html
+import re
 import secrets
 import time
 
@@ -58,7 +59,8 @@ class Shares:
                 "number": "A number inside the control's range.",
                 "select": "One of the options, as text.",
                 "cover": "open, close, stop, or a position from 0 to 100.",
-                "button": "Any value presses it.",
+                "button": "Any value presses it. IR remote keys such as Power or Volume+ are buttons.",
+                "air conditioner": "power true or false, mode cool heat auto fan_only dry, temp 16 to 30, fan auto low medium high.",
                 "climate": "A number sets the temperature. Text such as heat or off sets the mode.",
             },
         }
@@ -186,12 +188,17 @@ a {{ color: #8ec8ff; }}
         device = await self.device_for(token, device_id)
         if not commands:
             raise RuntimeError("Choose a command to send.")
+        bare = _bare(device["id"])
+        remote = self.hub.ir.knows(bare)
         tuya_id = device["id"].removeprefix("tuya:") if device["id"].startswith("tuya:") else None
         for command in commands:
             code = str((command or {}).get("code") or "").strip()
             control = next((item for item in device["controls"] if item["code"] == code or item.get("entity_id") == code), None)
             if not control or not control["writable"]:
                 raise RuntimeError(f"{code or 'That control'} cannot be changed with this key.")
+            if remote:
+                await self.hub.ir.command(bare, control["code"], command.get("value"))
+                continue
             local_code = tuya_id and control["code"] != control.get("entity_id")
             if local_code:
                 if not self.hub.local.is_live(tuya_id):
@@ -247,11 +254,15 @@ a {{ color: #8ec8ff; }}
             by_unique[entity.get("unique_id") or ""] = entity
             by_device.setdefault(entity.get("device_id"), []).append(entity)
         state_of = {item["entity_id"]: item.get("state") for item in states or [] if isinstance(item, dict)}
-        self._index = {"by_device": by_device, "by_unique": by_unique, "states": state_of}
+        attributes = {item["entity_id"]: item.get("attributes") or {} for item in states or [] if isinstance(item, dict)}
+        self._index = {"by_device": by_device, "by_unique": by_unique, "states": state_of, "attributes": attributes}
         self._index_at = now
         return self._index
 
     def _controls(self, row, index):
+        bare = _bare(row["key"])
+        if row["key"].startswith(("tuya:", "ir:")) and self.hub.ir.knows(bare):
+            return self._ir_controls(bare, index)
         controls = []
         seen = set()
         tuya_id = row["key"].removeprefix("tuya:") if row["key"].startswith("tuya:") else None
@@ -271,6 +282,7 @@ a {{ color: #8ec8ff; }}
                     "state": state,
                     "writable": bool(point["writable"]),
                     "primary": not entity or entity.get("entity_category") not in ("config", "diagnostic"),
+                    **_point_limits(point),
                 })
                 if entity_id:
                     seen.add(entity_id)
@@ -288,6 +300,39 @@ a {{ color: #8ec8ff; }}
                 "state": index["states"].get(entity["entity_id"]),
                 "writable": domain in WRITABLE,
                 "primary": entity.get("entity_category") not in ("config", "diagnostic"),
+                **_entity_limits(domain, index["attributes"].get(entity["entity_id"]) or {}),
+            })
+        return controls
+
+    def _ir_controls(self, remote_id, index):
+        view = self.hub.ir.list_one(remote_id)
+
+        def entity_of(suffix):
+            entity = index["by_unique"].get(f"devicehub_ir_{remote_id}_{suffix}")
+            return entity.get("entity_id") if entity else None
+
+        controls = []
+        if view["ac"]:
+            ac, climate = view["ac"], entity_of("ac")
+            controls += [
+                {"code": "power", "name": "Power", "type": "Boolean", "entity_id": climate, "state": ac["power"],
+                 "writable": True, "primary": True},
+                {"code": "mode", "name": "Mode", "type": "Enum", "entity_id": climate, "state": ac["mode"],
+                 "writable": True, "primary": True, "options": ac["modes"]},
+                {"code": "temp", "name": "Temperature", "type": "Integer", "entity_id": climate, "state": ac["temp"],
+                 "writable": True, "primary": True, "min": ac["min"], "max": ac["max"], "step": 1, "unit": "°C"},
+                {"code": "fan", "name": "Fan", "type": "Enum", "entity_id": climate, "state": ac["fan"],
+                 "writable": True, "primary": True, "options": ac["fans"]},
+            ]
+        for key in view["keys"]:
+            controls.append({
+                "code": key["code"],
+                "name": key["name"],
+                "type": "button",
+                "entity_id": entity_of(_slug(key["code"])),
+                "state": None,
+                "writable": True,
+                "primary": key["primary"],
             })
         return controls
 
@@ -336,6 +381,37 @@ a {{ color: #8ec8ff; }}
 
 def _bare(device_id):
     return device_id.split(":", 1)[1] if ":" in device_id else device_id
+
+
+def _slug(text):
+    return re.sub(r"[^a-z0-9]+", "_", str(text).lower()).strip("_") or "key"
+
+
+def _point_limits(point):
+    values = point.get("values") or {}
+    if point["type"] == "Enum":
+        return {"options": [str(item) for item in values.get("range") or []]}
+    if point["type"] == "Integer":
+        limits = {key: values[key] for key in ("min", "max", "step") if isinstance(values.get(key), (int, float))}
+        if values.get("scale"):
+            limits["scale"] = values["scale"]
+        if values.get("unit"):
+            limits["unit"] = values["unit"]
+        return limits
+    return {}
+
+
+def _entity_limits(domain, attributes):
+    if domain in ("select", "input_select"):
+        return {"options": [str(item) for item in attributes.get("options") or []]}
+    if domain in ("number", "input_number"):
+        limits = {key: attributes[key] for key in ("min", "max", "step") if isinstance(attributes.get(key), (int, float))}
+        if attributes.get("unit_of_measurement"):
+            limits["unit"] = attributes["unit_of_measurement"]
+        return limits
+    if domain == "sensor" and attributes.get("unit_of_measurement"):
+        return {"unit": attributes["unit_of_measurement"]}
+    return {}
 
 
 def _label(code):

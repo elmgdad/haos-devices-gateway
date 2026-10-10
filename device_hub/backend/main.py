@@ -11,6 +11,7 @@ from aiohttp import web
 from . import store
 from .ha import HAError, HomeAssistant
 from .hotspot import Hotspot
+from .ir import IrRemotes
 from .scanner import Scanner
 from .share import Shares
 from .tuya_bridge import LocalBridge
@@ -24,6 +25,11 @@ ROOT = Path(__file__).resolve().parent.parent
 WWW = ROOT / "www"
 PORT = 8765
 INGRESS_PEERS = {"172.30.32.2", "127.0.0.1"}
+CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+}
 
 
 def load_dev_env():
@@ -42,15 +48,22 @@ async def guard(request, handler):
     shared = request.path == "/api/v1" or request.path.startswith("/api/v1/")
     if store.ADDON and not shared and request.remote not in INGRESS_PEERS:
         return web.json_response({"error": "Open Device Hub from the Home Assistant sidebar."}, status=403)
+    if shared and request.method == "OPTIONS":
+        return web.Response(status=204, headers=CORS)
     try:
-        return await handler(request)
-    except web.HTTPException:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        if shared:
+            exc.headers.update(CORS)
         raise
     except (HAError, RuntimeError, ValueError, KeyError) as exc:
-        return web.json_response({"error": str(exc) or exc.__class__.__name__}, status=400)
+        response = web.json_response({"error": str(exc) or exc.__class__.__name__}, status=400)
     except Exception as exc:  # noqa: BLE001
         _LOGGER.exception("Request failed: %s", request.path)
-        return web.json_response({"error": f"Unexpected error: {exc}"}, status=500)
+        response = web.json_response({"error": f"Unexpected error: {exc}"}, status=500)
+    if shared:
+        response.headers.update(CORS)
+    return response
 
 
 class Hub:
@@ -61,6 +74,8 @@ class Hub:
         self.scanner = Scanner(self.ha, self.cloud, self.tuya_local)
         self.local = LocalBridge(self.ha, self.cloud, self.scanner)
         self.tuya_local.bridge = self.local
+        self.ir = IrRemotes(self)
+        self.ir.attach()
         self.share = Shares(self)
         self.hotspot = Hotspot(self.ha)
         self.zha = Zha(self.ha)
@@ -322,6 +337,28 @@ class Hub:
                 "ha_device_id": (host.get("ha") or {}).get("device_id"),
                 "tab": "network",
             })
+        ir_placed = _ir_devices(registries)
+        blasters = {item["id"]: item["name"] for item in self.ir.list()["blasters"]}
+        for row in rows:
+            remote_id = row["key"].removeprefix("tuya:")
+            if row["key"].startswith("tuya:") and self.ir.knows(remote_id):
+                row["ha_device_id"] = row.get("ha_device_id") or (ir_placed.get(remote_id) or {}).get("id")
+                blaster = blasters.get(self.ir.get(remote_id)["blaster_id"])
+                row["status"] = f"IR remote on {blaster}" if blaster else "IR remote"
+        for remote in self.ir.remotes.values():
+            rows.append({
+                "key": f"ir:{remote['id']}",
+                "name": remote["name"],
+                "sources": ["tuya"],
+                "kind": "Learned IR remote",
+                "area": None,
+                "online": None,
+                "status": f"Learned on {blasters.get(remote['blaster_id'], 'a blaster')}",
+                "warn": False,
+                "address": "",
+                "ha_device_id": (ir_placed.get(remote["id"]) or {}).get("id"),
+                "tab": "tuya",
+            })
         by_id = {device["id"]: device for device in registries["devices"]}
         for row in rows:
             placed = by_id.get(row.get("ha_device_id") or "")
@@ -422,6 +459,15 @@ async def _settings_view(hub: Hub):
     return current
 
 
+def _ir_devices(registries):
+    found = {}
+    for device in registries["devices"]:
+        for domain, identifier in device.get("identifiers") or []:
+            if domain == "mqtt" and str(identifier).startswith("devicehub_ir_"):
+                found[str(identifier).removeprefix("devicehub_ir_")] = device
+    return found
+
+
 def _public_device(item):
     return {
         "id": item["id"],
@@ -430,7 +476,12 @@ def _public_device(item):
         "online": item.get("online"),
         "source": item.get("source"),
         "controls": [
-            {key: control[key] for key in ("code", "name", "type", "entity_id", "state", "writable")}
+            {
+                key: control[key]
+                for key in ("code", "name", "type", "entity_id", "state", "writable", "primary",
+                            "options", "min", "max", "step", "scale", "unit")
+                if key in control
+            }
             for control in item["controls"]
         ],
     }
@@ -522,6 +573,8 @@ def routes(hub: Hub):
     @r.get("/api/tuya/devices/{device_id}/control")
     async def tuya_control(request):
         device_id = request.match_info["device_id"]
+        if hub.ir.knows(device_id):
+            raise RuntimeError("This is an IR remote. Use its buttons in the Remotes panel.")
         return web.json_response(hub.local.control(device_id) or await hub.cloud.control(device_id))
 
     @r.post("/api/tuya/devices/{device_id}/commands")
@@ -546,6 +599,46 @@ def routes(hub: Hub):
             device["area_id"] = match.get("area_id") or device.get("area_id")
             device["controls"] = match["controls"]
         return web.json_response(overview)
+
+    @r.get("/api/ir")
+    async def ir_list(_request):
+        view = hub.ir.list()
+        registries = await hub.ha.registries()
+        placed = _ir_devices(registries)
+        for remote in view["remotes"]:
+            device = placed.get(remote["id"]) or {}
+            remote["ha_device_id"] = device.get("id")
+            remote["area_id"] = device.get("area_id")
+            remote["area"] = registries["areas"].get(device.get("area_id"))
+        return web.json_response(view)
+
+    @r.post("/api/ir/remotes")
+    async def ir_create(request):
+        data = await body(request)
+        return web.json_response(hub.ir.create(data.get("name"), data.get("blaster_id")))
+
+    @r.delete("/api/ir/remotes/{remote_id}")
+    async def ir_delete(request):
+        return web.json_response(hub.ir.delete(request.match_info["remote_id"]))
+
+    @r.post("/api/ir/remotes/{remote_id}/learn")
+    async def ir_learn(request):
+        data = await body(request)
+        return web.json_response(await hub.ir.learn(request.match_info["remote_id"], data.get("name")))
+
+    @r.delete("/api/ir/remotes/{remote_id}/buttons/{name}")
+    async def ir_forget_button(request):
+        return web.json_response(hub.ir.forget_button(request.match_info["remote_id"], request.match_info["name"]))
+
+    @r.post("/api/ir/remotes/{remote_id}/command")
+    async def ir_command(request):
+        data = await body(request)
+        code = str(data.get("code") or "").strip()
+        if not code:
+            raise RuntimeError("Choose a key to send.")
+        result = await hub.ir.command(request.match_info["remote_id"], code, data.get("value"))
+        hub.share.invalidate()
+        return web.json_response(result)
 
     @r.get("/api/share")
     async def share_panel(_request):
@@ -740,8 +833,10 @@ async def create_app():
         app["tuya_task"] = asyncio.create_task(hub.cloud.restore())
         app["hotspot_task"] = asyncio.create_task(hub.hotspot.ensure())
         await hub.local.start()
+        await hub.ir.start()
 
     async def on_cleanup(_app):
+        hub.ir.stop()
         await asyncio.to_thread(hub.local.stop)
         app["ha_task"].cancel()
         await session.close()

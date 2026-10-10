@@ -2,6 +2,8 @@ import type {
   AddStart,
   Area,
   HotspotStatus,
+  IrRemote,
+  IrView,
   LocalOverview,
   Network,
   ScanStatus,
@@ -55,6 +57,14 @@ export const api = {
   tuyaControl: (id: string) => get<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/control`),
   tuyaCommand: (id: string, code: string, value: boolean | number | string) =>
     post<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/commands`, { commands: [{ code, value }] }),
+  ir: () => get<IrView>("/ir"),
+  irCreate: (name: string, blaster_id: string) => post<IrRemote>("/ir/remotes", { name, blaster_id }),
+  irDelete: (id: string) => del(`/ir/remotes/${encodeURIComponent(id)}`),
+  irLearn: (id: string, name: string) => post<IrRemote>(`/ir/remotes/${encodeURIComponent(id)}/learn`, { name }),
+  irForget: (id: string, name: string) =>
+    del<IrRemote>(`/ir/remotes/${encodeURIComponent(id)}/buttons/${encodeURIComponent(name)}`),
+  irCommand: (id: string, code: string, value?: boolean | number | string) =>
+    post<IrRemote>(`/ir/remotes/${encodeURIComponent(id)}/command`, { code, value }),
   local: () => get<LocalOverview>("/local"),
   saveLocal: (ids: string[] = []) => post<LocalOverview>("/local/save", { ids }),
   forgetLocal: (id: string) => del<LocalOverview>(`/local/${encodeURIComponent(id)}`),

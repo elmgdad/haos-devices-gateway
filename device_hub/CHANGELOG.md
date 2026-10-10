@@ -1,3 +1,7 @@
+# 0.1.14
+
+IR remotes. TV and AC remotes added on a control panel get buttons and AC controls in Device Hub, Home Assistant and the API. Any remote can be learned on a panel or Smart IR and is then sent on your network without the Tuya cloud.
+
 # 0.1.13
 
 A key from Settings can list and control the devices you choose. The same page documents the API. Each device can be placed in a Home Assistant area, and saved devices show the entity ids automations use.
