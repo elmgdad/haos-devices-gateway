@@ -1,3 +1,7 @@
+# 0.1.12
+
+Asking for controls on a device that is not in the Tuya project says so. A device Tuya lists but will not share still explains the Smart Life account.
+
 # 0.1.11
 
 Release notes for the Home Assistant update dialog.

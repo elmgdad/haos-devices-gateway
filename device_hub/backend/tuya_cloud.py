@@ -111,7 +111,9 @@ class TuyaCloud:
 
     async def control(self, device_id):
         self._require()
-        device = self.by_id(device_id) or {}
+        device = self.by_id(device_id)
+        if not device:
+            raise RuntimeError("That device is not in this Tuya project.")
         status, functions, blocked = await asyncio.to_thread(_read_control, self._cloud, device_id)
         return {
             "id": device_id,
@@ -125,6 +127,8 @@ class TuyaCloud:
 
     async def command(self, device_id, commands):
         self._require()
+        if not self.by_id(device_id):
+            raise RuntimeError("That device is not in this Tuya project.")
         cleaned = []
         for command in commands or []:
             code = str((command or {}).get("code") or "").strip()
