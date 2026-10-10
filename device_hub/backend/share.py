@@ -289,7 +289,7 @@ a {{ color: #8ec8ff; }}
                 })
                 if entity_id:
                     seen.add(entity_id)
-        for entity in index["by_device"].get(row.get("ha_device_id")) or []:
+        for entity in index["by_device"].get(row.get("ha_device_id") or "") or []:
             if entity["entity_id"] in seen:
                 continue
             domain = entity["entity_id"].split(".", 1)[0]

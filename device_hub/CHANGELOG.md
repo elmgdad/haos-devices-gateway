@@ -1,3 +1,7 @@
+# 0.1.17
+
+A shared device that is not in Home Assistant no longer picks up unrelated entities.
+
 # 0.1.16
 
 A share key can cover all devices, including ones added later. Shared controls list their options, ranges and units.
