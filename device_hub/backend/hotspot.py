@@ -143,12 +143,15 @@ class Hotspot:
         await self._unshare()
         await self._nm("connection", "down", HOTSPOT, check=False)
         await self._nm("connection", "delete", HOTSPOT, check=False)
+        released = False
         if previous:
             await self._nm("connection", "modify", previous, "connection.autoconnect", "yes")
+            released = await self._release_ethernet_if_same_address(previous)
             await self._nm("connection", "up", previous, timeout=60)
         elif iface:
             await self._nm("device", "connect", iface, timeout=60)
-        await self._restore_ethernet(saved)
+        if not released:
+            await self._restore_ethernet(saved)
         store.remove("hotspot")
         return await self.status()
 
@@ -193,6 +196,28 @@ class Hotspot:
             return None
         nameservers = [item for item in (ipv4.get("nameservers") or []) if item] or ["1.1.1.1", "8.8.8.8"]
         return {"interface": name, "nameservers": nameservers[:3]}
+
+    async def _release_ethernet_if_same_address(self, connection):
+        """Wi-Fi is about to reclaim its old address. Drop it from Ethernet first."""
+        try:
+            wanted = await self._nm("-g", "ipv4.addresses", "connection", "show", connection, check=False)
+        except RuntimeError:
+            return
+        wanted_ips = {item.split("/", 1)[0] for item in wanted.splitlines() if item.strip()}
+        if not wanted_ips:
+            return False
+        data = await self.ha.supervisor("GET", "/network/info")
+        released = False
+        for item in data.get("interfaces", []):
+            if item.get("type") != "ethernet":
+                continue
+            addresses = {entry.split("/", 1)[0] for entry in ((item.get("ipv4") or {}).get("address") or [])}
+            if wanted_ips & addresses:
+                await self.ha.supervisor(
+                    "POST", f"/network/interface/{item['interface']}/update", {"ipv4": {"method": "disabled"}}
+                )
+                released = True
+        return released
 
     async def _restore_ethernet(self, saved):
         method = saved.get("ethernet_method")
