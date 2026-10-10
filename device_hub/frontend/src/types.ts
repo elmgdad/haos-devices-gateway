@@ -60,6 +60,7 @@ export interface TuyaControl {
   online: boolean | null
   status: TuyaStatusItem[]
   functions: TuyaFunction[]
+  blocked?: string | null
 }
 
 export interface TuyaDevice {

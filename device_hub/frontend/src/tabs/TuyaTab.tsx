@@ -515,6 +515,7 @@ function ControlDialog({ device, onClose }: { device: TuyaDevice | null; onClose
             <Led state={detail.online ? "ok" : "off"} />
             {detail.online ? "Online" : "Offline"}. Commands go through the Tuya cloud API.
           </p>
+          {detail.blocked && <p className="rounded-md bg-sunk px-3 py-2 text-sm text-ink">{detail.blocked}</p>}
           {detail.status.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {detail.status.map((item) => (
@@ -524,7 +525,7 @@ function ControlDialog({ device, onClose }: { device: TuyaDevice | null; onClose
               ))}
             </div>
           )}
-          {detail.functions.length === 0 ? (
+          {detail.blocked ? null : detail.functions.length === 0 ? (
             <p className="text-sm text-muted">Tuya did not publish any standard commands for this device.</p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">

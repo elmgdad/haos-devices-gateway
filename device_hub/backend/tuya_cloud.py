@@ -111,16 +111,14 @@ class TuyaCloud:
     async def control(self, device_id):
         self._require()
         device = self.by_id(device_id) or {}
-        status, functions = await asyncio.gather(
-            asyncio.to_thread(_read_status, self._cloud, device_id),
-            asyncio.to_thread(_read_functions, self._cloud, device_id),
-        )
+        status, functions, blocked = await asyncio.to_thread(_read_control, self._cloud, device_id)
         return {
             "id": device_id,
             "name": device.get("name") or device_id,
             "online": device.get("online"),
             "status": status,
             "functions": functions,
+            "blocked": blocked,
         }
 
     async def command(self, device_id, commands):
@@ -168,6 +166,35 @@ def _cloud_result(payload, what):
             message = payload.get("Payload") or payload.get("msg") or payload.get("Error")
         raise RuntimeError(str(message or f"Tuya did not return the device {what}."))
     return payload.get("result")
+
+
+def _read_control(cloud, device_id):
+    blocked = None
+    try:
+        status = _read_status(cloud, device_id)
+    except RuntimeError as exc:
+        if not _denied(exc):
+            raise
+        status = []
+        blocked = _DENIED
+    try:
+        functions = _read_functions(cloud, device_id)
+    except RuntimeError as exc:
+        if not _denied(exc):
+            raise
+        functions = []
+        blocked = blocked or _DENIED
+    return status, functions, blocked
+
+
+def _denied(exc):
+    return "permission deny" in str(exc).lower()
+
+
+_DENIED = (
+    "Tuya lists this device, but it is not on the Smart Life account linked to this project. "
+    "The cloud API refuses its status and commands. Add it to that account, then open Control again."
+)
 
 
 def _read_status(cloud, device_id):
