@@ -189,6 +189,7 @@ export interface HotspotStatus {
   address: string | null
   signal: number | null
   ethernet_ipv4: boolean
+  upstream: string | null
   previous: string | null
 }
 

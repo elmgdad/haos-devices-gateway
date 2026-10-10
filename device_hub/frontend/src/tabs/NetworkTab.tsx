@@ -335,7 +335,8 @@ function HotspotPanel() {
           {data?.running ? (
             <span>
               Broadcasting <b>{data.ssid}</b>
-              {data.address ? ` at ${data.address}` : ""}. Open Home Assistant at{" "}
+              {data.address ? ` at ${data.address}` : ""}. Devices on it reach the internet through Ethernet
+              {data.upstream ? ` (${data.upstream})` : ""}. Open Home Assistant at{" "}
               <span className="font-mono">http://{data.address || "10.42.0.1"}:8123</span>.
             </span>
           ) : (

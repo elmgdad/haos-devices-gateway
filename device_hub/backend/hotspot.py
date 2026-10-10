@@ -6,16 +6,22 @@ for the clients.
 """
 
 import asyncio
+import logging
 import os
 import shutil
 from pathlib import Path
+
+_LOGGER = logging.getLogger(__name__)
 
 from . import store
 from .ha import HAError
 
 HOTSPOT = "device-hub-hotspot"
 ADDRESS = "10.42.0.1"
+SUBNET = "10.42.0.0/24"
 PID_FILE = Path("/tmp/device-hub-dnsmasq.pid")
+DNS_FILE = Path("/tmp/device-hub-dnsmasq.dns")
+NAT_FILE = Path("/tmp/device-hub-nat.txt")
 DBUS_SOCKETS = (
     "/run/dbus/system_bus_socket",
     "/var/run/dbus/system_bus_socket",
@@ -49,6 +55,7 @@ class Hotspot:
             "address": address,
             "signal": wifi.get("signal") if wifi else None,
             "ethernet_ipv4": info["ethernet_ipv4"],
+            "upstream": (store.load("hotspot") or {}).get("upstream"),
             "previous": previous,
         }
 
@@ -90,14 +97,16 @@ class Hotspot:
                 "ipv6.method", "disabled",
             )
             await self._nm("connection", "up", HOTSPOT, timeout=60)
-            await self._start_dhcp(iface)
+            await self._share(iface)
         except RuntimeError:
             await self._stop_dhcp()
+            await self._unshare()
             await self._nm("connection", "down", HOTSPOT, check=False)
             await self._nm("connection", "delete", HOTSPOT, check=False)
             if active and active != HOTSPOT:
                 await self._nm("connection", "modify", active, "connection.autoconnect", "yes", check=False)
                 await self._nm("connection", "up", active, check=False, timeout=60)
+            await self._restore_ethernet(store.load("hotspot") or {})
             store.remove("hotspot")
             raise
         await self._nm("connection", "modify", HOTSPOT, "connection.autoconnect", "yes")
@@ -119,7 +128,10 @@ class Hotspot:
         except RuntimeError:
             return
         if wifi.get("mode") == "ap" or active == HOTSPOT:
-            await self._start_dhcp(wifi["interface"])
+            try:
+                await self._share(wifi["interface"])
+            except RuntimeError as exc:
+                _LOGGER.warning("Hotspot has no path to the network: %s", exc)
 
     async def stop(self):
         self._require()
@@ -128,6 +140,7 @@ class Hotspot:
         info = await self._network()
         iface = (info["wifi"] or {}).get("interface") or "wlan0"
         await self._stop_dhcp()
+        await self._unshare()
         await self._nm("connection", "down", HOTSPOT, check=False)
         await self._nm("connection", "delete", HOTSPOT, check=False)
         if previous:
@@ -135,8 +148,109 @@ class Hotspot:
             await self._nm("connection", "up", previous, timeout=60)
         elif iface:
             await self._nm("device", "connect", iface, timeout=60)
+        await self._restore_ethernet(saved)
         store.remove("hotspot")
         return await self.status()
+
+    async def _share(self, iface):
+        """Let hotspot clients use the Ethernet connection for the rest of the network."""
+        upstream = await self._ensure_upstream()
+        if not upstream:
+            raise RuntimeError("Plug in Ethernet. The Wi-Fi radio is the hotspot, so internet has to come in on the cable.")
+        self._forward()
+        await self._nat(iface, upstream["interface"])
+        await self._start_dhcp(iface, upstream["nameservers"])
+        saved = store.load("hotspot") or {}
+        saved["upstream"] = upstream["interface"]
+        store.save("hotspot", saved)
+
+    async def _ensure_upstream(self):
+        data = await self.ha.supervisor("GET", "/network/info")
+        ethernet = next(
+            (item for item in data.get("interfaces", []) if item.get("type") == "ethernet" and item.get("connected")),
+            None,
+        )
+        if not ethernet:
+            return None
+        name = ethernet["interface"]
+        ipv4 = ethernet.get("ipv4") or {}
+        addresses = ipv4.get("address") or []
+        if not addresses and ipv4.get("method") != "auto":
+            saved = store.load("hotspot") or {}
+            saved.setdefault("ethernet_method", ipv4.get("method") or "disabled")
+            saved["ethernet_interface"] = name
+            store.save("hotspot", saved)
+            await self.ha.supervisor("POST", f"/network/interface/{name}/update", {"ipv4": {"method": "auto"}})
+        for _ in range(20):
+            if addresses:
+                break
+            await asyncio.sleep(1)
+            data = await self.ha.supervisor("GET", "/network/info")
+            ethernet = next((item for item in data.get("interfaces", []) if item.get("interface") == name), None)
+            ipv4 = (ethernet or {}).get("ipv4") or {}
+            addresses = ipv4.get("address") or []
+        if not addresses:
+            return None
+        nameservers = [item for item in (ipv4.get("nameservers") or []) if item] or ["1.1.1.1", "8.8.8.8"]
+        return {"interface": name, "nameservers": nameservers[:3]}
+
+    async def _restore_ethernet(self, saved):
+        method = saved.get("ethernet_method")
+        name = saved.get("ethernet_interface")
+        if method and name and method != "auto":
+            try:
+                await self.ha.supervisor("POST", f"/network/interface/{name}/update", {"ipv4": {"method": method}})
+            except HAError as exc:
+                _LOGGER.warning("Could not restore Ethernet: %s", exc)
+
+    def _forward(self):
+        path = Path("/proc/sys/net/ipv4/ip_forward")
+        try:
+            path.write_text("1\n")
+        except OSError as exc:
+            raise RuntimeError("The Pi will not forward traffic from the hotspot.") from exc
+
+    async def _nat(self, inside, outside):
+        if not shutil.which("iptables"):
+            raise RuntimeError("iptables is not installed in this app.")
+        NAT_FILE.write_text(f"{inside} {outside}\n")
+        await self._iptables(["-t", "nat", "-C", "POSTROUTING", "-s", SUBNET, "-o", outside, "-j", "MASQUERADE"], allow_fail=True) or await self._iptables(
+            ["-t", "nat", "-A", "POSTROUTING", "-s", SUBNET, "-o", outside, "-j", "MASQUERADE"]
+        )
+        await self._iptables(["-C", "FORWARD", "-i", inside, "-o", outside, "-j", "ACCEPT"], allow_fail=True) or await self._iptables(
+            ["-I", "FORWARD", "-i", inside, "-o", outside, "-j", "ACCEPT"]
+        )
+        established = ["-i", outside, "-o", inside, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"]
+        await self._iptables(["-C", "FORWARD", *established], allow_fail=True) or await self._iptables(["-I", "FORWARD", *established])
+
+    async def _unshare(self):
+        if not NAT_FILE.exists() or not shutil.which("iptables"):
+            NAT_FILE.unlink(missing_ok=True)
+            return
+        try:
+            inside, outside = NAT_FILE.read_text().split()
+        except ValueError:
+            NAT_FILE.unlink(missing_ok=True)
+            return
+        await self._iptables(["-t", "nat", "-D", "POSTROUTING", "-s", SUBNET, "-o", outside, "-j", "MASQUERADE"], allow_fail=True)
+        await self._iptables(["-D", "FORWARD", "-i", inside, "-o", outside, "-j", "ACCEPT"], allow_fail=True)
+        await self._iptables(
+            ["-D", "FORWARD", "-i", outside, "-o", inside, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+            allow_fail=True,
+        )
+        NAT_FILE.unlink(missing_ok=True)
+
+    async def _iptables(self, args, allow_fail=False):
+        proc = await asyncio.create_subprocess_exec(
+            "iptables", *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+        )
+        _, err = await proc.communicate()
+        if proc.returncode != 0:
+            if allow_fail:
+                return False
+            detail = err.decode(errors="ignore").strip()
+            raise RuntimeError(detail or "The Pi could not share Ethernet with the hotspot.")
+        return True
 
     def _can_control(self):
         return store.ADDON and bool(shutil.which("nmcli")) and self._dbus() is not None
@@ -211,9 +325,11 @@ class Hotspot:
             raise RuntimeError(text or "The Raspberry Pi refused the hotspot change.")
         return out.decode(errors="ignore")
 
-    async def _start_dhcp(self, iface):
-        if self._dhcp_running():
+    async def _start_dhcp(self, iface, nameservers=None):
+        dns = ",".join(nameservers or ["1.1.1.1", "8.8.8.8"])
+        if self._dhcp_running() and DNS_FILE.exists() and DNS_FILE.read_text().strip() == dns:
             return
+        await self._stop_dhcp()
         if not shutil.which("dnsmasq"):
             raise RuntimeError("DHCP for the hotspot is not installed in this app.")
         PID_FILE.unlink(missing_ok=True)
@@ -226,7 +342,7 @@ class Hotspot:
             f"--listen-address={ADDRESS}",
             "--dhcp-range=10.42.0.10,10.42.0.100,255.255.255.0,12h",
             f"--dhcp-option=3,{ADDRESS}",
-            f"--dhcp-option=6,{ADDRESS}",
+            f"--dhcp-option=6,{dns}",
             "--no-resolv",
             "--no-hosts",
             f"--pid-file={PID_FILE}",
@@ -238,6 +354,7 @@ class Hotspot:
         if proc.returncode != 0 or not self._dhcp_running():
             detail = (err or out).decode(errors="ignore").strip()
             raise RuntimeError(detail or "The hotspot could not start handing out addresses.")
+        DNS_FILE.write_text(dns + "\n")
 
     async def _stop_dhcp(self):
         if not PID_FILE.exists():
