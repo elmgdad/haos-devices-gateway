@@ -373,6 +373,25 @@ class Hub:
                 row["area"] = registries["areas"][area_id]
         return {"devices": rows, "areas": registries["areas"]}
 
+    async def reset(self):
+        """Forget everything Device Hub saved and remove what it published to Home Assistant.
+
+        Tuya Local, Zigbee2MQTT and ZHA keep their own devices. Options from the app
+        configuration page are kept; Tuya signs in again with them on the next start.
+        """
+        for device_id in list(self.local.profiles):
+            await self.local.forget(device_id)
+        self.local.last_results = []
+        self.ir.reset()
+        self.share.reset()
+        self.cloud.logout()
+        for name in ("settings", "scan"):
+            store.remove(name)
+        self.scanner.results = []
+        self.scanner.finished_at = None
+        self.z2m.set_base(await self.z2m.discovered_topic() or "zigbee2mqtt")
+        return {"ok": True}
+
     async def remember_area(self, ha_device_id, area_id):
         devices = await self.ha.call("config/device_registry/list")
         device = next((item for item in devices or [] if item["id"] == ha_device_id), None)
@@ -522,6 +541,10 @@ def routes(hub: Hub):
         store.save("settings", current)
         hub.z2m.set_base(discovered or current["z2m_base_topic"] or "zigbee2mqtt")
         return web.json_response(await _settings_view(hub))
+
+    @r.post("/api/reset")
+    async def reset(_request):
+        return web.json_response(await hub.reset())
 
     @r.get("/api/areas")
     async def areas(_request):

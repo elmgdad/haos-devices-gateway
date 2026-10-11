@@ -33,6 +33,33 @@ export default function SettingsTab({ status, onChanged }: { status: Status | nu
     }
   }
 
+  const reset = async () => {
+    const ok = await feedback.confirm({
+      title: "Reset Device Hub?",
+      body: (
+        <>
+          Device Hub forgets devices saved for local control, learned IR buttons, share keys, the Tuya sign-in and its
+          settings, and removes the entities it added to Home Assistant. Tuya Local, Zigbee2MQTT and ZHA keep their
+          devices. The Tuya account in the app configuration signs in again when the app restarts.
+        </>
+      ),
+      action: "Reset",
+      danger: true,
+    })
+    if (!ok) return
+    setBusy("reset")
+    try {
+      await api.reset()
+      feedback.ok("Device Hub was reset.")
+      await Promise.all([settings.reload(), tuya.reload()])
+      onChanged()
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const signOut = async () => {
     const ok = await feedback.confirm({
       title: "Sign out of the Tuya cloud project?",
@@ -142,6 +169,12 @@ export default function SettingsTab({ status, onChanged }: { status: Status | nu
             </dd>
           </div>
         </dl>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-4 py-3 text-sm">
+          <span className="text-muted">Start over with an empty Device Hub, for example after moving to a new Tuya account.</span>
+          <Button variant="danger" busy={busy === "reset"} onClick={reset}>
+            Reset Device Hub
+          </Button>
+        </div>
       </Panel>
     </div>
   )

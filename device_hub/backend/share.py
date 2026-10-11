@@ -142,6 +142,11 @@ a {{ color: #8ec8ff; }}
         self._persist()
         return {"id": item["id"], "name": item["name"], "token": item["token"], "device_ids": item["device_ids"]}
 
+    def reset(self):
+        self.tokens = []
+        store.remove(STORE)
+        self.invalidate()
+
     def revoke(self, token_id):
         before = len(self.tokens)
         self.tokens = [item for item in self.tokens if item["id"] != token_id]

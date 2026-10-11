@@ -682,6 +682,24 @@ class IrRemotes:
         }
         self.hub.local.mqtt.publish(f"{PREFIX}/ir/{remote_id}/state", json.dumps(payload), retain=True)
 
+    def reset(self):
+        """Remove every remote Device Hub published to Home Assistant and forget learned buttons."""
+        mqtt = self.hub.local.mqtt
+        topics = set(self._announced)
+        for remote in self._all():
+            topics.update(topic for topic, _ in _discovery(remote, self._keys_of(remote), False))
+            for key in self._keys_of(remote):
+                topics.add(f"{DISCOVERY}/button/devicehub_ir_{remote['id']}/{_old_slug(key['code'])}/config")
+            mqtt.publish(f"{PREFIX}/ir/{remote['id']}/state", "", retain=True)
+        for topic in topics:
+            mqtt.publish(topic, "", retain=True)
+        with self._lock:
+            self.remotes, self.buttons, self.blasters, self.ac = {}, {}, {}, {}
+            self._keys, self._hub_keys, self._parents, self._announced = {}, {}, {}, {}
+            self._parents_at = self._service_at = 0.0
+            self.service = None
+            store.remove(STORE)
+
     def _persist(self):
         store.save(STORE, {"remotes": self.remotes, "buttons": self.buttons, "blasters": self.blasters, "ac": self.ac})
 

@@ -1,3 +1,7 @@
+# 0.1.22
+
+Settings has Reset Device Hub. It forgets saved devices, learned buttons, share keys and the Tuya sign-in, and removes the entities Device Hub added to Home Assistant.
+
 # 0.1.21
 
 With Tuya's IR service on, each TV remote shows every key Tuya has for it, including mute and input.

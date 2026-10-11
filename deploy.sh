@@ -3,7 +3,7 @@
 # Commit your changes (including device_hub/www) before running this.
 set -eu
 
-HOST="${HA_SSH_HOST:-root@192.168.100.26}"
+HOST="${HA_SSH_HOST:-root@192.168.8.28}"
 SLUG="${DEVICE_HUB_SLUG:-3bc3f5fd_device_hub}"
 cd "$(dirname "$0")"
 

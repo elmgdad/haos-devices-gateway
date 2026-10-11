@@ -41,6 +41,7 @@ export const api = {
   status: () => get<Status>("/status"),
   settings: () => get<Settings>("/settings"),
   saveSettings: (settings: Partial<Settings>) => post<Settings>("/settings", settings),
+  reset: () => post<{ ok: boolean }>("/reset"),
   areas: () => get<Area[]>("/areas"),
   createArea: (name: string) => post<Area>("/areas", { name }),
   share: () => get<ShareView>("/share"),
