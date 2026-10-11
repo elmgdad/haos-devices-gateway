@@ -46,6 +46,8 @@ class TuyaCloud:
         self.fetched_at = 0
         self.error = None
         self._creds = _initial_creds()
+        self._shadow_cache = {}
+        self._control_cache = {}
 
     @property
     def connected(self):
@@ -139,6 +141,67 @@ class TuyaCloud:
             raise RuntimeError("Choose a command to send.")
         await asyncio.to_thread(_send, self._cloud, device_id, cleaned)
         return await self.control(device_id)
+
+    async def issue(self, device_id, properties):
+        """Write thing-model properties. Used for devices the standard command API refuses."""
+        self._require()
+        if not properties:
+            raise RuntimeError("Choose a command to send.")
+        await asyncio.to_thread(_issue, self._cloud, device_id, properties)
+
+    async def garage_action(self, device_id):
+        """The RF copier's execute slot for button 2, which is the garage on/off."""
+        self._require()
+        try:
+            props = await self._shadow(device_id)
+        except Exception:
+            return None
+        found = next((item for item in props if item.get("code") == "start2"), None)
+        if not found:
+            return None
+        return {"code": "start2", "thing_value": "01", "custom_name": found.get("custom_name") or ""}
+
+    async def cloud_controls(self, device_id):
+        """Status and commands for a cloud device that Home Assistant does not list."""
+        self._require()
+        now = time.monotonic()
+        cached = self._control_cache.get(device_id)
+        if cached and now - cached[0] < 15:
+            return cached[1]
+        try:
+            status, functions, _blocked = await asyncio.to_thread(_read_control, self._cloud, device_id)
+        except Exception:
+            return []
+        by_code = {item["code"]: item for item in functions if item.get("code")}
+        states = {item["code"]: item.get("value") for item in status if item.get("code")}
+        controls = []
+        for code in list(dict.fromkeys([*states, *by_code])):
+            function = by_code.get(code) or {}
+            kind = function.get("type") or _infer_type(states.get(code))
+            writable = code in by_code and kind in ("Boolean", "Integer", "Enum")
+            quiet = any(word in code for word in ("sensitiv", "detection", "alarm", "calibrat"))
+            controls.append({
+                "code": code,
+                "name": _label(function.get("desc") or code),
+                "type": kind,
+                "entity_id": None,
+                "state": states.get(code),
+                "writable": writable,
+                "primary": code in ("presence_state", "illuminance_value", "switch", "switch_1") or (writable and not quiet),
+                "via": "cloud" if writable else None,
+                **_function_limits(kind, function.get("values")),
+            })
+        self._control_cache[device_id] = (now, controls)
+        return controls
+
+    async def _shadow(self, device_id):
+        now = time.monotonic()
+        cached = self._shadow_cache.get(device_id)
+        if cached and now - cached[0] < 15:
+            return cached[1]
+        props = await asyncio.to_thread(_shadow, self._cloud, device_id)
+        self._shadow_cache[device_id] = (now, props)
+        return props
 
     async def spec(self, device_id):
         self._require()
@@ -281,6 +344,51 @@ def _read_functions(cloud, device_id):
 
 def _send(cloud, device_id, commands):
     _cloud_result(cloud.sendcommand(device_id, {"commands": commands}), "command")
+
+
+def _issue(cloud, device_id, properties):
+    body = {"properties": json.dumps(properties)}
+    _cloud_result(cloud.cloudrequest(f"/v2.0/cloud/thing/{device_id}/shadow/properties/issue", post=body), "command")
+
+
+def _shadow(cloud, device_id):
+    result = _cloud_result(cloud.cloudrequest(f"/v2.0/cloud/thing/{device_id}/shadow/properties"), "status") or {}
+    props = result.get("properties") if isinstance(result, dict) else None
+    return props if isinstance(props, list) else []
+
+
+def _infer_type(value):
+    if isinstance(value, bool):
+        return "Boolean"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return "Integer"
+    return "String"
+
+
+def _function_limits(kind, values):
+    parsed = {}
+    if isinstance(values, str) and values:
+        try:
+            parsed = json.loads(values)
+        except ValueError:
+            parsed = {}
+    elif isinstance(values, dict):
+        parsed = values
+    if kind == "Enum":
+        return {"options": [str(item) for item in parsed.get("range") or []]}
+    if kind == "Integer":
+        limits = {key: parsed[key] for key in ("min", "max", "step") if isinstance(parsed.get(key), (int, float))}
+        if parsed.get("scale"):
+            limits["scale"] = parsed["scale"]
+        if parsed.get("unit"):
+            limits["unit"] = parsed["unit"]
+        return limits
+    return {}
+
+
+def _label(code):
+    text = str(code or "").replace("_", " ").strip()
+    return text[:1].upper() + text[1:] if text else code
 
 
 def _coerce(value):

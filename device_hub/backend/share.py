@@ -55,6 +55,27 @@ class Shares:
                     "about": "Change one or more controls. code is the control code or the Home Assistant entity id.",
                     "body": {"commands": [{"code": "switch_1", "value": True}]},
                 },
+                {
+                    "method": "GET",
+                    "path": "/api/v1/scenes",
+                    "about": "Scenes saved for this key. A scene can mix Sonoff, Zigbee and Tuya.",
+                },
+                {
+                    "method": "POST",
+                    "path": "/api/v1/scenes",
+                    "about": "Save a scene. Each action is a device id, a control code, and the value to send.",
+                    "body": {"name": "Leaving", "actions": [{"device_id": "sonoff:abc", "code": "switch.kitchen", "value": False}]},
+                },
+                {
+                    "method": "POST",
+                    "path": "/api/v1/scenes/{id}/run",
+                    "about": "Send every action in the scene. One device failing does not skip the others.",
+                },
+                {
+                    "method": "DELETE",
+                    "path": "/api/v1/scenes/{id}",
+                    "about": "Remove a scene.",
+                },
             ],
             "values": {
                 "switch, light, fan, lock": "true turns it on or unlocks it. false turns it off or locks it.",
@@ -64,6 +85,7 @@ class Shares:
                 "button": "Any value presses it. IR remote keys such as Power or Volume+ are buttons.",
                 "air conditioner": "power true or false, mode cool heat auto fan_only dry, temp 16 to 30, fan auto low medium high.",
                 "climate": "A number sets the temperature. Text such as heat or off sets the mode.",
+                "garage": "The Smart RF Copier control named Garage is button 2. true is On and false is Off. Each change presses the button.",
             },
         }
 
@@ -208,6 +230,17 @@ a {{ color: #8ec8ff; }}
             if remote:
                 await self.hub.ir.command(bare, control["code"], command.get("value"))
                 continue
+            if control.get("via") == "thing":
+                if not tuya_id:
+                    raise RuntimeError(f"{control['name']} cannot be changed with this key.")
+                await self.hub.cloud.issue(tuya_id, {control["code"]: control.get("thing_value") or "01"})
+                self.hub.scenes.remember(device["id"], control["code"], command.get("value") in TRUTHY)
+                continue
+            if control.get("via") == "cloud":
+                if not tuya_id:
+                    raise RuntimeError(f"{control['name']} cannot be changed with this key.")
+                await self.hub.cloud.command(tuya_id, [{"code": control["code"], "value": command.get("value")}])
+                continue
             local_code = tuya_id and control["code"] != control.get("entity_id")
             if local_code:
                 if not self.hub.local.is_live(tuya_id):
@@ -228,12 +261,19 @@ a {{ color: #8ec8ff; }}
         for row in rows:
             if row["key"].startswith("lan:"):
                 continue
-            controls = self._controls(row, index)
+            garage = await self._garage(row)
+            controls = [garage] if garage else self._controls(row, index)
+            if not controls and row["key"].startswith("tuya:"):
+                try:
+                    controls = await self.hub.cloud.cloud_controls(row["key"].removeprefix("tuya:"))
+                except Exception:
+                    controls = []
             for control in controls:
                 if any(word in control["name"].lower() for word in RISKY):
                     control["primary"] = False
             if not controls:
                 continue
+            role, detail = _role(self.hub, row, controls)
             items.append({
                 "id": row["key"],
                 "name": row["name"],
@@ -241,6 +281,8 @@ a {{ color: #8ec8ff; }}
                 "area_id": row.get("area_id"),
                 "online": row.get("online"),
                 "source": row["sources"][0],
+                "role": role,
+                "detail": detail,
                 "ha_device_id": row.get("ha_device_id"),
                 "controls": controls,
             })
@@ -317,6 +359,35 @@ a {{ color: #8ec8ff; }}
                 **_entity_limits(domain, attributes),
             })
         return controls
+
+    async def _garage(self, row):
+        if not row["key"].startswith("tuya:"):
+            return None
+        device_id = row["key"].removeprefix("tuya:")
+        device = self.hub.cloud.by_id(device_id) if self.hub.cloud.connected else None
+        if not device:
+            return None
+        text = f"{device.get('name') or ''} {device.get('product_name') or ''}".lower()
+        if device.get("category") != "kg" and "rf" not in text:
+            return None
+        action = await self.hub.cloud.garage_action(device_id)
+        if not action:
+            return None
+        custom = (action.get("custom_name") or "").lower()
+        name = action.get("custom_name") or "Garage"
+        if not custom or any(word in custom for word in ("grade", "garage", "gate")):
+            name = "Garage"
+        return {
+            "code": action["code"],
+            "name": name,
+            "type": "Boolean",
+            "entity_id": None,
+            "state": bool(self.hub.scenes.remembered(row["key"], action["code"])),
+            "writable": True,
+            "primary": True,
+            "via": "thing",
+            "thing_value": action.get("thing_value") or "01",
+        }
 
     def _ir_controls(self, remote_id, index):
         view = self.hub.ir.list_one(remote_id)
@@ -395,6 +466,18 @@ a {{ color: #8ec8ff; }}
 
 def _bare(device_id):
     return device_id.split(":", 1)[1] if ":" in device_id else device_id
+
+
+def _role(hub, row, controls):
+    codes = {control["code"] for control in controls}
+    if "start2" in codes:
+        return "garage", "Button 2"
+    bare = _bare(row["key"])
+    if "temp" in codes and "mode" in codes and hub.ir.knows(bare):
+        remote = next((item for item in hub.ir._all() if item["id"] == bare), None)
+        blaster = hub.cloud.by_id(remote["blaster_id"]) if remote and remote.get("blaster_id") else None
+        return "ac", (blaster or {}).get("name") or ""
+    return None, None
 
 
 def _point_limits(point):

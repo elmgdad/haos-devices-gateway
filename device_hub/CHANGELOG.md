@@ -1,3 +1,7 @@
+# 0.1.24
+
+The share API saves scenes that mix Sonoff, Zigbee and Tuya, then runs them together. Smart RF Copier button 2 is the garage on/off. The air conditioner on the Smart Control Panel Mini is a remote. Cloud-only Tuya devices, including the presence sensors, are listed too.
+
 # 0.1.23
 
 Sonoff is a source. Devices from the SonoffLAN integration show up with their local address, signal and switches, and can be placed in an area and shared.

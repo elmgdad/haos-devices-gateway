@@ -13,6 +13,7 @@ from .ha import HAError, HomeAssistant
 from .hotspot import Hotspot
 from .ir import IrRemotes
 from .scanner import Scanner
+from .scenes import Scenes
 from .share import Shares
 from .sonoff import Sonoff
 from .tuya_bridge import LocalBridge
@@ -29,7 +30,7 @@ INGRESS_PEERS = {"172.30.32.2", "127.0.0.1"}
 CORS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
 }
 
 
@@ -77,6 +78,7 @@ class Hub:
         self.tuya_local.bridge = self.local
         self.ir = IrRemotes(self)
         self.ir.attach()
+        self.scenes = Scenes(self)
         self.share = Shares(self)
         self.hotspot = Hotspot(self.ha)
         self.zha = Zha(self.ha)
@@ -408,6 +410,7 @@ class Hub:
         self.local.last_results = []
         self.ir.reset()
         self.share.reset()
+        self.scenes.reset()
         self.cloud.logout()
         for name in ("settings", "scan"):
             store.remove(name)
@@ -525,6 +528,8 @@ def _public_device(item):
         "area": item.get("area"),
         "online": item.get("online"),
         "source": item.get("source"),
+        "role": item.get("role"),
+        "detail": item.get("detail"),
         "controls": [
             {
                 key: control[key]
@@ -733,6 +738,27 @@ def routes(hub: Hub):
         data = await body(request)
         device = await hub.share.command(token, request.match_info["device_id"], data.get("commands"))
         return web.json_response(_public_device(device))
+
+    @r.get("/api/v1/scenes")
+    async def scenes_list(request):
+        token = hub.share.require(request)
+        return web.json_response({"scenes": await hub.scenes.visible(token)})
+
+    @r.post("/api/v1/scenes")
+    async def scenes_create(request):
+        token = hub.share.require(request)
+        data = await body(request)
+        return web.json_response(await hub.scenes.create(token, data.get("name"), data.get("actions")))
+
+    @r.delete("/api/v1/scenes/{scene_id}")
+    async def scenes_delete(request):
+        hub.share.require(request)
+        return web.json_response(hub.scenes.delete(request.match_info["scene_id"]))
+
+    @r.post("/api/v1/scenes/{scene_id}/run")
+    async def scenes_run(request):
+        token = hub.share.require(request)
+        return web.json_response(await hub.scenes.run(token, request.match_info["scene_id"]))
 
     @r.post("/api/local/save")
     async def local_save(request):
