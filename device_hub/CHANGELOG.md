@@ -1,3 +1,7 @@
+# 0.1.23
+
+Sonoff is a source. Devices from the SonoffLAN integration show up with their local address, signal and switches, and can be placed in an area and shared.
+
 # 0.1.22
 
 Settings has Reset Device Hub. It forgets saved devices, learned buttons, share keys and the Tuya sign-in, and removes the entities Device Hub added to Home Assistant.

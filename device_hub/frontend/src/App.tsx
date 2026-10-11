@@ -5,6 +5,7 @@ import { cx, sourceColor, timeAgo, usePoll } from "./lib"
 import AllDevices from "./tabs/AllDevices"
 import NetworkTab from "./tabs/NetworkTab"
 import SettingsTab from "./tabs/SettingsTab"
+import SonoffTab from "./tabs/SonoffTab"
 import TuyaTab from "./tabs/TuyaTab"
 import Z2mTab from "./tabs/Z2mTab"
 import ZhaTab from "./tabs/ZhaTab"
@@ -26,13 +27,13 @@ function ports(status: Status | null): Port[] {
   if (!status) {
     return [{ tab: "all", label: "All devices", led: "off", count: null, caption: "loading" }]
   }
-  const { tuya, tuya_local: local, z2m, zha, lan } = status
+  const { tuya, tuya_local: local, z2m, zha, lan, sonoff } = status
   return [
     {
       tab: "all",
       label: "All devices",
       led: status.ha_connected ? "ok" : "warn",
-      count: tuya.count + z2m.count + zha.count + lan.count,
+      count: tuya.count + z2m.count + zha.count + (sonoff?.count ?? 0) + lan.count,
       caption: status.ha_connected ? "every system" : "HA offline",
     },
     {
@@ -80,6 +81,14 @@ function ports(status: Status | null): Port[] {
       caption: zha.loaded ? "devices" : zha.entries ? "not running" : "not set up",
     },
     {
+      tab: "sonoff",
+      label: "Sonoff",
+      source: "sonoff",
+      led: !sonoff?.installed ? "off" : sonoff.offline ? "warn" : "ok",
+      count: sonoff?.installed ? sonoff.count : null,
+      caption: !sonoff?.installed ? "not set up" : sonoff.offline ? `${sonoff.offline} offline` : `${sonoff.local} local`,
+    },
+    {
       tab: "network",
       label: "Network",
       source: "lan",
@@ -90,7 +99,7 @@ function ports(status: Status | null): Port[] {
   ]
 }
 
-const TABS: Tab[] = ["all", "tuya", "tuya_local", "z2m", "zha", "network", "settings"]
+const TABS: Tab[] = ["all", "tuya", "tuya_local", "z2m", "zha", "sonoff", "network", "settings"]
 
 function initialTab(): Tab {
   const hash = window.location.hash.replace("#", "") as Tab
@@ -202,6 +211,7 @@ export default function App() {
         )}
         {tab === "z2m" && <Z2mTab onChanged={refreshStatus} zhaLoaded={!!status.data?.zha.loaded} />}
         {tab === "zha" && <ZhaTab onChanged={refreshStatus} z2mRunning={status.data?.z2m.state === "started"} />}
+        {tab === "sonoff" && <SonoffTab onChanged={refreshStatus} />}
         {tab === "network" && <NetworkTab onChanged={refreshStatus} />}
         {tab === "settings" && <SettingsTab status={status.data} onChanged={refreshStatus} />}
       </main>

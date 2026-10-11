@@ -1,4 +1,4 @@
-export type Source = "tuya" | "tuya_local" | "z2m" | "zha" | "lan"
+export type Source = "tuya" | "tuya_local" | "z2m" | "zha" | "sonoff" | "lan"
 export type Tab = "all" | Source | "network" | "settings"
 
 export interface Status {
@@ -15,6 +15,37 @@ export interface Status {
     permit_join: boolean | null
   }
   lan: { count: number; hosts: number; finished_at: number | null; running: boolean }
+  sonoff: { installed: boolean; count: number; local: number; offline: number }
+}
+
+export interface SonoffSwitch {
+  entity_id: string
+  name: string
+  domain: string
+  state: string | null
+}
+
+export interface SonoffDevice {
+  id: string
+  ha_device_id: string
+  name: string
+  model: string
+  firmware: string | null
+  mac: string | null
+  area_id: string | null
+  area: string | null
+  online: boolean | null
+  local: boolean
+  ip: string | null
+  rssi: number | null
+  switches: SonoffSwitch[]
+}
+
+export interface SonoffView {
+  installed: boolean
+  entries: { entry_id: string; title: string; state: string }[]
+  devices: SonoffDevice[]
+  cloud_error: string | null
 }
 
 export interface UnifiedDevice {

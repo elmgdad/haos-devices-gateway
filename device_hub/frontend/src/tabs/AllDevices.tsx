@@ -5,7 +5,7 @@ import { cx, SOURCES, sourceColor, usePoll } from "../lib"
 import type { Source, Tab } from "../types"
 import { AreaSelect, Empty, Led, Notice, Panel, SearchInput, SourceTag, Td, Th, Toggle } from "../ui"
 
-const ORDER: Source[] = ["tuya", "tuya_local", "z2m", "zha", "lan"]
+const ORDER: Source[] = ["tuya", "tuya_local", "z2m", "zha", "sonoff", "lan"]
 
 export default function AllDevices({ onOpen }: { onOpen: (tab: Tab) => void }) {
   const view = usePoll(api.allDevices, 30000)
@@ -16,7 +16,7 @@ export default function AllDevices({ onOpen }: { onOpen: (tab: Tab) => void }) {
 
   const all = view.data?.devices ?? []
   const counts = useMemo(() => {
-    const result: Record<Source, number> = { tuya: 0, tuya_local: 0, z2m: 0, zha: 0, lan: 0 }
+    const result: Record<Source, number> = { tuya: 0, tuya_local: 0, z2m: 0, zha: 0, sonoff: 0, lan: 0 }
     all.forEach((d) => d.sources.forEach((s) => (result[s] += 1)))
     return result
   }, [all])

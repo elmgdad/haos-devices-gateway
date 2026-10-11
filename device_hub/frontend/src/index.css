@@ -20,6 +20,7 @@
   --color-src-tuya_local: var(--src-tuya-local);
   --color-src-z2m: var(--src-z2m);
   --color-src-zha: var(--src-zha);
+  --color-src-sonoff: var(--src-sonoff);
   --color-src-lan: var(--src-lan);
 }
 
@@ -37,6 +38,7 @@
   --src-tuya-local: #7647d6;
   --src-z2m: #c08f00;
   --src-zha: #0d8577;
+  --src-sonoff: #c2307a;
   --src-lan: #2c6bd3;
   color-scheme: light;
 }
@@ -55,6 +57,7 @@
   --src-tuya-local: #a184f2;
   --src-z2m: #f0c030;
   --src-zha: #2fc2b0;
+  --src-sonoff: #f06aa8;
   --src-lan: #6a9cf0;
   color-scheme: dark;
 }

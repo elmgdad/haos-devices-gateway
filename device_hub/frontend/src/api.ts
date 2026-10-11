@@ -10,6 +10,7 @@ import type {
   Settings,
   ShareToken,
   ShareView,
+  SonoffView,
   Status,
   TuyaConfig,
   TuyaControl,
@@ -98,6 +99,9 @@ export const api = {
   zhaPermit: (duration: number) => post("/zha/permit", { duration }),
   zhaReconfigure: (ieee: string) => post(`/zha/devices/${ieee}/reconfigure`),
   zhaRemove: (ieee: string) => del(`/zha/devices/${ieee}`),
+
+  sonoff: () => get<SonoffView>("/sonoff"),
+  sonoffSwitch: (entity_id: string, on: boolean) => post<SonoffView>("/sonoff/switch", { entity_id, on }),
 
   z2m: () => get<Z2mView>("/z2m"),
   z2mAddon: (action: "start" | "stop" | "restart") => post(`/z2m/addon/${action}`),

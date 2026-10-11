@@ -10,6 +10,7 @@ export const SOURCES: Record<Source, { label: string; short: string }> = {
   tuya_local: { label: "Tuya Local", short: "Local" },
   z2m: { label: "Zigbee2MQTT", short: "Z2M" },
   zha: { label: "ZHA", short: "ZHA" },
+  sonoff: { label: "Sonoff", short: "Sonoff" },
   lan: { label: "Network", short: "LAN" },
 }
 

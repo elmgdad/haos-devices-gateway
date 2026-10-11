@@ -14,6 +14,7 @@ from .hotspot import Hotspot
 from .ir import IrRemotes
 from .scanner import Scanner
 from .share import Shares
+from .sonoff import Sonoff
 from .tuya_bridge import LocalBridge
 from .tuya_cloud import TuyaCloud
 from .tuya_local import TuyaLocal
@@ -80,6 +81,7 @@ class Hub:
         self.hotspot = Hotspot(self.ha)
         self.zha = Zha(self.ha)
         self.z2m = Z2M(self.ha)
+        self.sonoff = Sonoff(self.ha)
 
     async def tuya_view(self, refresh=False, registries=None):
         devices = await self.cloud.list(refresh=refresh) if self.cloud.connected else []
@@ -321,6 +323,28 @@ class Hub:
                 "ha_device_id": device["ha_device_id"],
                 "tab": "z2m",
             })
+        try:
+            sonoff = await self.sonoff.overview(registries)
+        except HAError:
+            sonoff = {"devices": []}
+        for device in sonoff["devices"]:
+            if device["ip"]:
+                lan_claimed.add(device["ip"])
+            on = sum(1 for item in device["switches"] if item["state"] == "on")
+            mode = "Local" if device["local"] else "Cloud"
+            rows.append({
+                "key": f"sonoff:{device['id']}",
+                "name": device["name"],
+                "sources": ["sonoff"],
+                "kind": device["model"],
+                "area": device["area"],
+                "online": device["online"],
+                "status": f"{mode} · {on} of {len(device['switches'])} on" if device["online"] is not False else "Offline",
+                "warn": device["online"] is False,
+                "address": device["ip"] or "",
+                "ha_device_id": device["ha_device_id"],
+                "tab": "sonoff",
+            })
         for host in self.scanner.results:
             if not host.get("smart") or host["ip"] in lan_claimed or host.get("is_self"):
                 continue
@@ -439,7 +463,14 @@ class Hub:
             devices = await safe(self.ha.call("zha/devices", timeout=60), {})
             zha_count = len(devices) if isinstance(devices, list) else 0
         addon = await safe(self.z2m.addon(), {"installed": False})
+        sonoff = await safe(self.sonoff.overview(), {"installed": False, "devices": []})
         return {
+            "sonoff": {
+                "installed": sonoff.get("installed", False),
+                "count": len(sonoff.get("devices") or []),
+                "local": sum(1 for d in sonoff.get("devices") or [] if d["local"] and d["online"] is not False),
+                "offline": sum(1 for d in sonoff.get("devices") or [] if d["online"] is False),
+            },
             "mode": self.ha.mode,
             "ha_connected": self.ha.connected,
             "tuya": {"connected": self.cloud.connected, "count": len(self.cloud.devices), "error": self.cloud.error},
@@ -796,6 +827,17 @@ def routes(hub: Hub):
     async def zha_remove(request):
         await hub.zha.remove(request.match_info["ieee"])
         return web.json_response({"ok": True})
+
+    @r.get("/api/sonoff")
+    async def sonoff(_request):
+        return web.json_response(await hub.sonoff.overview(await hub.ha.registries()))
+
+    @r.post("/api/sonoff/switch")
+    async def sonoff_switch(request):
+        data = await body(request)
+        result = await hub.sonoff.set_switch(str(data.get("entity_id") or ""), bool(data.get("on")))
+        hub.share.invalidate()
+        return web.json_response(result)
 
     @r.get("/api/z2m")
     async def z2m(_request):
