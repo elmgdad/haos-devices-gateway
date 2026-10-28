@@ -1,3 +1,7 @@
+# 0.1.29
+
+Device Hub has a logo: a hub joined to one dot for each system it brings together. It is the add-on icon and logo in Home Assistant, the panel's tab icon, and sits next to the title. The add-on has a README and a Documentation tab covering setup, every tab, removing devices, automations, the API, MCP, what is stored and troubleshooting.
+
 # 0.1.28
 
 Areas: every room with its devices, a switch per device, All on and All off, and adding, renaming or deleting areas. Automations: every Home Assistant automation with an on/off switch, last run and Run, and a builder for new ones (at a time, at sunrise or sunset, or when a device changes; on chosen days; set devices, switch an area, wait). Device Hub edits and deletes only the automations it made.

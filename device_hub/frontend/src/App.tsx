@@ -154,11 +154,14 @@ export default function App() {
   return (
     <div className="mx-auto flex min-h-screen max-w-[1500px] flex-col px-3 pb-10 sm:px-5">
       <header className="flex flex-wrap items-end justify-between gap-3 pt-5 pb-4">
-        <div>
-          <h1 className="label text-[26px] leading-none font-bold tracking-[0.08em]">Device Hub</h1>
-          <p className="mt-1.5 text-sm text-muted">
-            Tuya, Tuya Local, Zigbee2MQTT, ZHA and your network, wired into Home Assistant.
-          </p>
+        <div className="flex items-center gap-3">
+          <img src="./favicon.svg" alt="" className="size-11 shrink-0" />
+          <div>
+            <h1 className="label text-[26px] leading-none font-bold tracking-[0.08em]">Device Hub</h1>
+            <p className="mt-1.5 text-sm text-muted">
+              Tuya, Tuya Local, Zigbee2MQTT, ZHA, Sonoff and your network, wired into Home Assistant.
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2 text-xs text-muted">
           {status.data?.mode === "dev" && (

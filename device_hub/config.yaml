@@ -1,5 +1,5 @@
 name: Device Hub
-version: "0.1.28"
+version: "0.1.29"
 slug: device_hub
 description: Tuya, Tuya Local, Zigbee2MQTT, ZHA and LAN devices on one screen
 arch:
