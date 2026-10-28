@@ -5,6 +5,7 @@ import { Badge } from "../ui"
 export const KIND_LABEL: Record<ActivityKind, string> = {
   command: "Command",
   scene: "Scene",
+  automation: "Automation",
   remove: "Removed",
   change: "Changed",
   offline: "Offline",
@@ -19,6 +20,7 @@ const KIND_TONE: Partial<Record<ActivityKind, "ok" | "bad" | "info">> = {
   remove: "bad",
   error: "bad",
   key: "info",
+  automation: "info",
 }
 
 export function ActivityList({

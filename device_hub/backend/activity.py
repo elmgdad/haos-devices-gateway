@@ -13,7 +13,7 @@ from . import store
 
 STORE = "activity"
 LIMIT = 500
-KINDS = ("command", "scene", "remove", "change", "offline", "online", "key", "error")
+KINDS = ("command", "scene", "automation", "remove", "change", "offline", "online", "key", "error")
 
 
 class Activity:

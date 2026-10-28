@@ -1,5 +1,10 @@
 import type {
   ActivityEntry,
+  AreaCard,
+  AreaDevice,
+  Automation,
+  AutomationSpec,
+  AutomationTarget,
   AddStart,
   BulkResult,
   Command,
@@ -70,6 +75,23 @@ export const api = {
   activity: (kind = "") => get<{ activity: ActivityEntry[] }>(`/activity${kind ? `?kind=${kind}` : ""}`),
   clearActivity: () => del("/activity"),
   setup: () => get<{ items: SetupItem[] }>("/setup"),
+
+  areaOverview: () => get<{ areas: AreaCard[]; unassigned: AreaDevice[] }>("/areas/overview"),
+  areaCommand: (id: string, action: "on" | "off") =>
+    post<{ area: string; results: { device_id: string; name: string; ok: boolean; error?: string }[] }>(
+      `/areas/${encodeURIComponent(id)}/command`,
+      { action },
+    ),
+  renameArea: (id: string, name: string) => post<Area>(`/areas/${encodeURIComponent(id)}`, { name }),
+  deleteArea: (id: string) => del(`/areas/${encodeURIComponent(id)}`),
+
+  automations: () => get<{ automations: Automation[] }>("/automations"),
+  automationTargets: () => get<{ devices: AutomationTarget[] }>("/automations/targets"),
+  createAutomation: (spec: AutomationSpec) => post<Automation>("/automations", spec),
+  saveAutomation: (ref: string, spec: AutomationSpec) => post<Automation>(`/automations/${encodeURIComponent(ref)}`, spec),
+  deleteAutomation: (ref: string) => del(`/automations/${encodeURIComponent(ref)}`),
+  runAutomation: (ref: string) => post(`/automations/${encodeURIComponent(ref)}/run`),
+  enableAutomation: (ref: string, enabled: boolean) => post(`/automations/${encodeURIComponent(ref)}/enabled`, { enabled }),
 
   tuya: (refresh = false) => get<TuyaView>(`/tuya${refresh ? "?refresh=1" : ""}`),
   tuyaLogin: (access_id: string, secret: string, region: string) =>

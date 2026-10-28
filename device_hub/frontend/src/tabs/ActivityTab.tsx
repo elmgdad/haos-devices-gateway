@@ -10,6 +10,7 @@ import DeviceDrawer from "./DeviceDrawer"
 const FILTERS: { id: "" | ActivityKind | "status"; label: string }[] = [
   { id: "", label: "Everything" },
   { id: "command", label: "Commands" },
+  { id: "automation", label: "Automations" },
   { id: "status", label: "Online / offline" },
   { id: "change", label: "Changes" },
   { id: "remove", label: "Removals" },

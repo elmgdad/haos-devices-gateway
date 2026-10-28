@@ -333,9 +333,20 @@ function SharePanel() {
                 <Button icon={<ExternalLink className="size-4" />} onClick={() => window.open(docs.base_url, "_blank", "noopener")}>
                   API docs
                 </Button>
+                <Button icon={<ExternalLink className="size-4" />} onClick={() => window.open(docs.swagger, "_blank", "noopener")}>
+                  Swagger UI
+                </Button>
                 <Button icon={<ExternalLink className="size-4" />} onClick={() => window.open(docs.openapi, "_blank", "noopener")}>
                   OpenAPI spec
                 </Button>
+              </div>
+              <div className="rounded-md border border-line p-3">
+                <p className="font-medium">MCP for Claude and other assistants</p>
+                <p className="mt-1 text-muted">
+                  Device Hub is also an MCP server at <span className="font-mono text-xs">{docs.mcp}</span>. Give it a key: read keys
+                  get the tools that look, control keys the ones that switch, manage keys the ones that rename.
+                </p>
+                <pre className="mt-2 overflow-x-auto rounded-md bg-sunk p-2 font-mono text-[11px]">{`claude mcp add --transport http device-hub ${docs.mcp} \\\n  --header "Authorization: Bearer dh_your_key"`}</pre>
               </div>
               <pre className="overflow-x-auto rounded-md bg-sunk p-3 font-mono text-xs">{`curl -H "Authorization: Bearer dh_your_key" \\\n  ${docs.base_url}/devices`}</pre>
               {docs.endpoints.map((item) => (

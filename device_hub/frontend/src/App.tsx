@@ -4,6 +4,8 @@ import { api } from "./api"
 import { cx, sourceColor, timeAgo, usePoll, type StatusFilter } from "./lib"
 import ActivityTab from "./tabs/ActivityTab"
 import AllDevices from "./tabs/AllDevices"
+import AreasTab from "./tabs/AreasTab"
+import AutomationsTab from "./tabs/AutomationsTab"
 import NetworkTab from "./tabs/NetworkTab"
 import SettingsTab from "./tabs/SettingsTab"
 import SetupTab from "./tabs/SetupTab"
@@ -37,6 +39,20 @@ function ports(status: Status | null): Port[] {
       led: status.ha_connected ? "ok" : "warn",
       count: tuya.count + z2m.count + zha.count + (sonoff?.count ?? 0) + lan.count,
       caption: status.ha_connected ? "every system" : "HA offline",
+    },
+    {
+      tab: "areas",
+      label: "Areas",
+      led: status.areas?.count ? "ok" : "off",
+      count: status.areas?.count ?? null,
+      caption: "rooms",
+    },
+    {
+      tab: "automations",
+      label: "Automations",
+      led: status.automations?.on ? "ok" : "off",
+      count: status.automations?.count ?? null,
+      caption: status.automations ? `${status.automations.on} on` : "loading",
     },
     {
       tab: "tuya",
@@ -101,7 +117,7 @@ function ports(status: Status | null): Port[] {
   ]
 }
 
-const TABS: Tab[] = ["all", "tuya", "tuya_local", "z2m", "zha", "sonoff", "network", "setup", "activity", "settings"]
+const TABS: Tab[] = ["all", "areas", "automations", "tuya", "tuya_local", "z2m", "zha", "sonoff", "network", "setup", "activity", "settings"]
 
 const TOOLS: { tab: Tab; label: string; icon: ReactNode }[] = [
   { tab: "setup", label: "Setup", icon: <ListChecks className="size-5" /> },
@@ -232,6 +248,8 @@ export default function App() {
         {tab === "network" && <NetworkTab onChanged={refreshStatus} />}
         {tab === "settings" && <SettingsTab status={status.data} onChanged={refreshStatus} />}
         {tab === "setup" && <SetupTab onOpen={go} />}
+        {tab === "areas" && <AreasTab />}
+        {tab === "automations" && <AutomationsTab />}
         {tab === "activity" && <ActivityTab />}
       </main>
     </div>

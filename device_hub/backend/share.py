@@ -51,6 +51,8 @@ class Shares:
             "version": __version__,
             "base_url": base,
             "openapi": base + "/openapi.json",
+            "swagger": base + "/swagger",
+            "mcp": base_url.rstrip("/") + "/mcp",
             "auth": "Authorization: Bearer <key>",
             "scopes": SCOPE_ABOUT,
             "endpoints": openapi.endpoints(),
@@ -454,52 +456,80 @@ class Shares:
         return controls
 
     async def _ha_command(self, control, value, command=None):
-        entity_id = control.get("entity_id")
-        domain = (entity_id or "").split(".", 1)[0]
-        if not entity_id or domain not in WRITABLE:
-            raise RuntimeError(f"{control['name']} is only available inside Home Assistant.")
-        data = {"entity_id": entity_id}
-        brightness = _number((command or {}).get("brightness"))
-        if domain == "light" and brightness is not None:
-            if brightness <= 0:
-                service = "turn_off"
-            else:
-                service, data = "turn_on", {**data, "brightness_pct": max(1, min(100, round(brightness)))}
-        elif domain in ("switch", "light", "fan", "input_boolean", "humidifier", "siren"):
-            service = "turn_on" if value in TRUTHY else "turn_off"
-        elif domain == "valve":
-            if isinstance(value, (int, float)) or str(value).replace(".", "", 1).isdigit():
-                service, data = "set_valve_position", {**data, "position": int(float(value))}
-            else:
-                service = "open_valve" if value in TRUTHY else "close_valve"
-        elif domain == "lock":
-            service = "unlock" if value in TRUTHY else "lock"
-        elif domain in ("number", "input_number"):
-            service, data = "set_value", {**data, "value": float(value)}
-        elif domain in ("select", "input_select"):
-            service, data = "select_option", {**data, "option": str(value)}
-        elif domain == "button":
-            service = "press"
-        elif domain == "cover":
-            if isinstance(value, (int, float)) or str(value).isdigit():
-                service, data = "set_cover_position", {**data, "position": int(float(value))}
-            elif str(value).lower() == "stop":
-                service = "stop_cover"
-            elif value in TRUTHY or str(value).lower() == "open":
-                service = "open_cover"
-            else:
-                service = "close_cover"
-        elif domain == "climate":
-            if isinstance(value, (int, float)) or _number(value) is not None:
-                service, data = "set_temperature", {**data, "temperature": _number(value)}
-            else:
-                service, data = "set_hvac_mode", {**data, "hvac_mode": str(value)}
-        else:
-            raise RuntimeError(f"{control['name']} cannot be changed through the Device Hub API.")
+        domain, service, data = ha_service(control, value, command)
         await self.hub.ha.call_service(domain, service, data)
 
     def _persist(self):
         store.save(STORE, {"tokens": self.tokens})
+
+
+def ha_service(control, value, command=None):
+    """The Home Assistant service a control and value mean: (domain, service, data with entity_id)."""
+    entity_id = control.get("entity_id")
+    domain = (entity_id or "").split(".", 1)[0]
+    if not entity_id or domain not in WRITABLE:
+        raise RuntimeError(f"{control['name']} is only available inside Home Assistant.")
+    data = {"entity_id": entity_id}
+    brightness = _number((command or {}).get("brightness"))
+    if domain == "light" and brightness is not None:
+        if brightness <= 0:
+            service = "turn_off"
+        else:
+            service, data = "turn_on", {**data, "brightness_pct": max(1, min(100, round(brightness)))}
+    elif domain in ("switch", "light", "fan", "input_boolean", "humidifier", "siren"):
+        service = "turn_on" if value in TRUTHY else "turn_off"
+    elif domain == "valve":
+        if isinstance(value, (int, float)) or str(value).replace(".", "", 1).isdigit():
+            service, data = "set_valve_position", {**data, "position": int(float(value))}
+        else:
+            service = "open_valve" if value in TRUTHY else "close_valve"
+    elif domain == "lock":
+        service = "unlock" if value in TRUTHY else "lock"
+    elif domain in ("number", "input_number"):
+        service, data = "set_value", {**data, "value": float(value)}
+    elif domain in ("select", "input_select"):
+        service, data = "select_option", {**data, "option": str(value)}
+    elif domain == "button":
+        service = "press"
+    elif domain == "cover":
+        if isinstance(value, (int, float)) or str(value).isdigit():
+            service, data = "set_cover_position", {**data, "position": int(float(value))}
+        elif str(value).lower() == "stop":
+            service = "stop_cover"
+        elif value in TRUTHY or str(value).lower() == "open":
+            service = "open_cover"
+        else:
+            service = "close_cover"
+    elif domain == "climate":
+        if isinstance(value, (int, float)) or _number(value) is not None:
+            service, data = "set_temperature", {**data, "temperature": _number(value)}
+        else:
+            service, data = "set_hvac_mode", {**data, "hvac_mode": str(value)}
+    else:
+        raise RuntimeError(f"{control['name']} cannot be changed through the Device Hub API.")
+    return domain, service, data
+
+
+def filter_devices(devices, query):
+    """Devices narrowed by status (online, offline), area id or name, source and text in the name."""
+    status = query.get("status")
+    area = (query.get("area") or "").strip().lower()
+    source = query.get("source")
+    text = (query.get("q") or "").strip().lower()
+    shown = []
+    for item in devices:
+        if status == "online" and item.get("online") is not True:
+            continue
+        if status == "offline" and item.get("online") is not False:
+            continue
+        if area and area not in ((item.get("area_id") or "").lower(), (item.get("area") or "").lower()):
+            continue
+        if source and item.get("source") != source:
+            continue
+        if text and text not in f"{item['name']} {item.get('area') or ''}".lower():
+            continue
+        shown.append(item)
+    return shown
 
 
 def _bare(device_id):

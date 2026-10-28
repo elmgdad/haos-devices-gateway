@@ -1,3 +1,9 @@
+# 0.1.28
+
+Areas: every room with its devices, a switch per device, All on and All off, and adding, renaming or deleting areas. Automations: every Home Assistant automation with an on/off switch, last run and Run, and a builder for new ones (at a time, at sunrise or sunset, or when a device changes; on chosen days; set devices, switch an area, wait). Device Hub edits and deletes only the automations it made.
+
+The API covers areas (detail, on/off, create, rename, delete) and automations (list, create, edit, delete, run, turn on or off). Device Hub is also an MCP server at /mcp for Claude and other assistants, using the same keys. Swagger UI is at /api/v1/swagger, linked from the docs page and Settings, Share.
+
 # 0.1.27
 
 Full control from one place. Every device in All Devices opens a drawer with its controls (switches, dimmers, numbers, modes, covers, climate, IR keys), its details (rename, area, hardware, entities) and its activity, and updates live. Pick several devices to move them to an area, turn them on or off, or remove them. Setup lists what is connected and how to fix what is missing. Activity logs commands, renames, removals, API keys and devices going offline or coming back.

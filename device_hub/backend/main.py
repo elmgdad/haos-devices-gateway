@@ -9,15 +9,18 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-from . import store
+from . import openapi, store
 from .activity import Activity
+from .areas import Areas
+from .automations import Automations
 from .events import Events
 from .ha import HAError, HomeAssistant
 from .hotspot import Hotspot
 from .ir import IrRemotes
+from .mcp import Mcp
 from .scanner import Scanner
 from .scenes import Scenes
-from .share import PANEL, Shares
+from .share import PANEL, Shares, filter_devices
 from .sonoff import Sonoff
 from .tuya_bridge import LocalBridge
 from .tuya_cloud import TuyaCloud
@@ -50,7 +53,7 @@ def load_dev_env():
 
 @web.middleware
 async def guard(request, handler):
-    shared = request.path == "/api/v1" or request.path.startswith("/api/v1/")
+    shared = request.path in ("/api/v1", "/mcp") or request.path.startswith("/api/v1/")
     if store.ADDON and not shared and request.remote not in INGRESS_PEERS:
         return web.json_response({"error": "Open Device Hub from the Home Assistant sidebar."}, status=403)
     if shared and request.method == "OPTIONS":
@@ -88,6 +91,9 @@ class Hub:
         self.zha = Zha(self.ha)
         self.z2m = Z2M(self.ha)
         self.sonoff = Sonoff(self.ha)
+        self.areas = Areas(self)
+        self.automations = Automations(self)
+        self.mcp = Mcp(self)
         self.events = Events(self)
         self._rows = None
 
@@ -726,7 +732,18 @@ class Hub:
             zha_count = len(devices) if isinstance(devices, list) else 0
         addon = await safe(self.z2m.addon(), {"installed": False})
         sonoff = await safe(self.sonoff.overview(), {"installed": False, "devices": []})
+        try:
+            areas = len(await self.ha.call("config/area_registry/list") or [])
+            automations = await self.automations.list()
+        except Exception:  # noqa: BLE001
+            areas, automations = None, []
         return {
+            "areas": {"count": areas},
+            "automations": {
+                "count": len(automations),
+                "on": sum(1 for a in automations if a["enabled"]),
+                "ours": sum(1 for a in automations if a["ours"]),
+            },
             "sonoff": {
                 "installed": sonoff.get("installed", False),
                 "count": len(sonoff.get("devices") or []),
@@ -789,28 +806,19 @@ def _ir_devices(registries):
     return found
 
 
-PUBLIC_ACTIVITY = {"command", "scene", "remove", "change", "offline", "online"}
+PUBLIC_ACTIVITY = {"command", "scene", "remove", "change", "offline", "online", "automation"}
 
 
-def _filter_devices(devices, query):
-    status = query.get("status")
-    area = (query.get("area") or "").strip().lower()
-    source = query.get("source")
-    text = (query.get("q") or "").strip().lower()
-    shown = []
-    for item in devices:
-        if status == "online" and item.get("online") is not True:
-            continue
-        if status == "offline" and item.get("online") is not False:
-            continue
-        if area and area not in ((item.get("area_id") or "").lower(), (item.get("area") or "").lower()):
-            continue
-        if source and item.get("source") != source:
-            continue
-        if text and text not in f"{item['name']} {item.get('area') or ''}".lower():
-            continue
-        shown.append(item)
-    return shown
+def _all_devices(token):
+    if "*" not in token["device_ids"]:
+        raise web.HTTPForbidden(
+            text='{"error": "Areas and automations can touch any device, so this needs a key shared with all devices."}',
+            content_type="application/json",
+        )
+
+
+def _public_automation(item):
+    return {k: item.get(k) for k in ("entity_id", "id", "name", "enabled", "last_triggered", "mode", "running", "ours", "spec")}
 
 
 def _public_device(item):
@@ -884,11 +892,54 @@ def routes(hub: Hub):
     @r.post("/api/areas")
     async def create_area(request):
         data = await body(request)
-        name = str(data.get("name") or "").strip()
-        if not name:
-            raise RuntimeError("Name the area.")
-        created = await hub.ha.call("config/area_registry/create", name=name)
-        return web.json_response({"id": created["area_id"], "name": created["name"]})
+        return web.json_response(await hub.areas.create(data.get("name")))
+
+    @r.get("/api/areas/overview")
+    async def areas_overview(_request):
+        return web.json_response(await hub.areas.overview())
+
+    @r.post("/api/areas/{area_id}/command")
+    async def area_command(request):
+        data = await body(request)
+        return web.json_response(await hub.areas.command(request.match_info["area_id"], data.get("action")))
+
+    @r.post("/api/areas/{area_id}")
+    async def area_rename(request):
+        data = await body(request)
+        return web.json_response(await hub.areas.rename(request.match_info["area_id"], data.get("name")))
+
+    @r.delete("/api/areas/{area_id}")
+    async def area_delete(request):
+        return web.json_response(await hub.areas.delete(request.match_info["area_id"]))
+
+    @r.get("/api/automations")
+    async def automations(_request):
+        return web.json_response({"automations": await hub.automations.list()})
+
+    @r.get("/api/automations/targets")
+    async def automation_targets(_request):
+        return web.json_response({"devices": await hub.automations.targets()})
+
+    @r.post("/api/automations")
+    async def automation_create(request):
+        return web.json_response(await hub.automations.save(await body(request)))
+
+    @r.post("/api/automations/{ref}/run")
+    async def automation_run(request):
+        return web.json_response(await hub.automations.run(request.match_info["ref"]))
+
+    @r.post("/api/automations/{ref}/enabled")
+    async def automation_enabled(request):
+        data = await body(request)
+        return web.json_response(await hub.automations.set_enabled(request.match_info["ref"], bool(data.get("enabled"))))
+
+    @r.post("/api/automations/{ref}")
+    async def automation_save(request):
+        return web.json_response(await hub.automations.save(await body(request), request.match_info["ref"]))
+
+    @r.delete("/api/automations/{ref}")
+    async def automation_delete(request):
+        return web.json_response(await hub.automations.delete(request.match_info["ref"]))
 
     @r.post("/api/ha/devices/{device_id}")
     async def update_device(request):
@@ -1079,7 +1130,7 @@ def routes(hub: Hub):
     @r.get("/api/v1/devices")
     async def share_devices(request):
         token = hub.share.require(request)
-        devices = _filter_devices(await hub.share.devices_for(token), request.query)
+        devices = filter_devices(await hub.share.devices_for(token), request.query)
         return web.json_response({"devices": [_public_device(item) for item in devices]})
 
     @r.get("/api/v1/devices/{device_id}")
@@ -1112,14 +1163,101 @@ def routes(hub: Hub):
     @r.get("/api/v1/areas")
     async def share_areas(request):
         token = hub.share.require(request)
-        devices = await hub.share.devices_for(token)
-        items = await hub.ha.call("config/area_registry/list")
-        counts = {}
-        for item in devices:
-            counts[item.get("area_id")] = counts.get(item.get("area_id"), 0) + 1
+        overview = await hub.areas.overview(token)
         return web.json_response({"areas": [
-            {"id": a["area_id"], "name": a["name"], "devices": counts.get(a["area_id"], 0)} for a in items or []
+            {**{k: area[k] for k in ("id", "name", "online", "offline", "on", "switchable")}, "devices": len(area["devices"])}
+            for area in overview["areas"]
         ]})
+
+    @r.post("/api/v1/areas")
+    async def share_area_create(request):
+        token = hub.share.require(request, "manage")
+        _all_devices(token)
+        return web.json_response(await hub.areas.create((await body(request)).get("name")))
+
+    @r.get("/api/v1/areas/{area_id}")
+    async def share_area(request):
+        token = hub.share.require(request)
+        area = await hub.areas.one(request.match_info["area_id"], token)
+        ids = {d["id"] for d in area["devices"]}
+        devices = [_public_device(item) for item in await hub.share.devices_for(token) if item["id"] in ids]
+        return web.json_response({**area, "devices": devices})
+
+    @r.patch("/api/v1/areas/{area_id}")
+    async def share_area_rename(request):
+        token = hub.share.require(request, "manage")
+        _all_devices(token)
+        return web.json_response(await hub.areas.rename(request.match_info["area_id"], (await body(request)).get("name")))
+
+    @r.delete("/api/v1/areas/{area_id}")
+    async def share_area_delete(request):
+        token = hub.share.require(request, "manage")
+        _all_devices(token)
+        return web.json_response(await hub.areas.delete(request.match_info["area_id"]))
+
+    @r.post("/api/v1/areas/{area_id}/commands")
+    async def share_area_command(request):
+        token = hub.share.require(request, "control")
+        data = await body(request)
+        return web.json_response(await hub.areas.command(request.match_info["area_id"], data.get("action"), token))
+
+    @r.get("/api/v1/automations")
+    async def share_automations(request):
+        token = hub.share.require(request)
+        _all_devices(token)
+        return web.json_response({"automations": [_public_automation(item) for item in await hub.automations.list()]})
+
+    @r.post("/api/v1/automations")
+    async def share_automation_create(request):
+        token = hub.share.require(request, "manage")
+        _all_devices(token)
+        made = await hub.automations.save(await body(request), via=f"API key {token['name']}")
+        return web.json_response(_public_automation(made))
+
+    @r.get("/api/v1/automations/{ref}")
+    async def share_automation(request):
+        token = hub.share.require(request)
+        _all_devices(token)
+        return web.json_response(_public_automation(await hub.automations.find(request.match_info["ref"])))
+
+    @r.put("/api/v1/automations/{ref}")
+    async def share_automation_save(request):
+        token = hub.share.require(request, "manage")
+        _all_devices(token)
+        made = await hub.automations.save(await body(request), request.match_info["ref"], via=f"API key {token['name']}")
+        return web.json_response(_public_automation(made))
+
+    @r.delete("/api/v1/automations/{ref}")
+    async def share_automation_delete(request):
+        token = hub.share.require(request, "manage")
+        _all_devices(token)
+        return web.json_response(await hub.automations.delete(request.match_info["ref"], via=f"API key {token['name']}"))
+
+    @r.post("/api/v1/automations/{ref}/run")
+    async def share_automation_run(request):
+        token = hub.share.require(request, "control")
+        _all_devices(token)
+        return web.json_response(await hub.automations.run(request.match_info["ref"], via=f"API key {token['name']}"))
+
+    @r.post("/api/v1/automations/{ref}/enabled")
+    async def share_automation_enabled(request):
+        token = hub.share.require(request, "control")
+        _all_devices(token)
+        data = await body(request)
+        return web.json_response(await hub.automations.set_enabled(
+            request.match_info["ref"], bool(data.get("enabled")), via=f"API key {token['name']}"))
+
+    @r.get("/api/v1/swagger")
+    async def share_swagger(_request):
+        return web.Response(text=openapi.swagger(), content_type="text/html")
+
+    @r.post("/mcp")
+    async def mcp(request):
+        return await hub.mcp.handle(request)
+
+    @r.get("/mcp")
+    async def mcp_get(request):
+        return await hub.mcp.handle(request)
 
     @r.get("/api/v1/activity")
     async def share_activity(request):

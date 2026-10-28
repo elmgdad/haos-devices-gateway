@@ -101,8 +101,13 @@ export function Field({ label, hint, children }: { label: string; hint?: ReactNo
 const inputClass =
   "h-9 w-full rounded-md border border-line bg-card px-3 text-sm text-ink placeholder:text-muted/70 focus:border-src-lan focus:outline-none"
 
+/** Full width unless the caller gives its own width, since w-full would win over w-auto or w-24 in the CSS. */
+function fieldClass(className?: string) {
+  return /(^|\s)(w-|min-w-0)/.test(className ?? "") ? inputClass.replace("w-full ", "") : inputClass
+}
+
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={cx(inputClass, className)} />
+  return <input {...props} className={cx(fieldClass(className), className)} />
 }
 
 export function AreaSelect({
@@ -196,7 +201,7 @@ export function AreaSelect({
 
 export function Select({ className, children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
   return (
-    <select {...props} className={cx(inputClass, "pr-8", className)}>
+    <select {...props} className={cx(fieldClass(className), "pr-8", className)}>
       {children}
     </select>
   )

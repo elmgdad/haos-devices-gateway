@@ -27,6 +27,13 @@ class Events:
 
     async def _subscribe(self):
         await self.hub.ha.subscribe("subscribe_events", self._on_ha_event, event_type="state_changed")
+        await self.hub.ha.subscribe("subscribe_events", self._on_automation, event_type="automation_triggered")
+
+    def _on_automation(self, event):
+        data = (event or {}).get("data") or {}
+        source = data.get("source") or ""
+        why = f" ({source})" if source and not source.startswith("trigger action") else ""
+        self.hub.activity.log("automation", f"{data.get('name') or data.get('entity_id')} ran{why}", via="Home Assistant")
 
     def _on_ha_event(self, event):
         data = (event or {}).get("data") or {}

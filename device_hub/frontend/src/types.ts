@@ -1,5 +1,5 @@
 export type Source = "tuya" | "tuya_local" | "z2m" | "zha" | "sonoff" | "lan"
-export type Tab = "all" | Source | "network" | "settings" | "setup" | "activity"
+export type Tab = "all" | "areas" | "automations" | Source | "network" | "settings" | "setup" | "activity"
 
 export interface Status {
   mode: "addon" | "dev"
@@ -16,6 +16,8 @@ export interface Status {
   }
   lan: { count: number; hosts: number; finished_at: number | null; running: boolean }
   sonoff: { installed: boolean; count: number; local: number; offline: number }
+  areas?: { count: number | null }
+  automations?: { count: number; on: number; ours: number }
 }
 
 export interface SonoffSwitch {
@@ -190,6 +192,8 @@ export interface ShareDocs {
   version: string
   base_url: string
   openapi: string
+  swagger: string
+  mcp: string
   auth: string
   scopes: Record<ShareScope, string>
   endpoints: { method: string; path: string; about: string; scope: ShareScope; body?: unknown }[]
@@ -252,7 +256,7 @@ export interface Command {
   brightness?: number
 }
 
-export type ActivityKind = "command" | "scene" | "remove" | "change" | "offline" | "online" | "key" | "error"
+export type ActivityKind = "command" | "scene" | "automation" | "remove" | "change" | "offline" | "online" | "key" | "error"
 
 export interface ActivityEntry {
   id: string
@@ -556,4 +560,76 @@ export interface Settings {
   z2m_base_topic: string
   z2m_topic_discovered: boolean
   default_cidr: string
+}
+
+export interface AreaDevice {
+  id: string
+  name: string
+  online: boolean | null
+  source: Source
+  switchable: boolean
+  on: boolean
+}
+
+export interface AreaCard {
+  id: string
+  name: string
+  icon: string | null
+  devices: AreaDevice[]
+  online: number
+  offline: number
+  on: number
+  switchable: number
+}
+
+export interface AutomationTrigger {
+  type: "time" | "sun" | "device"
+  at?: string
+  event?: "sunrise" | "sunset"
+  offset_minutes?: number
+  device_id?: string
+  code?: string
+  to?: boolean | number | string
+  above?: number
+  below?: number
+  for_seconds?: number
+}
+
+export interface AutomationAction {
+  device_id?: string
+  code?: string
+  value?: boolean | number | string | null
+  brightness?: number
+  area_id?: string
+  action?: "on" | "off"
+  delay_seconds?: number
+}
+
+export interface AutomationSpec {
+  name: string
+  trigger: AutomationTrigger
+  days: string[]
+  actions: AutomationAction[]
+}
+
+export interface Automation {
+  entity_id: string
+  id: string | null
+  name: string
+  enabled: boolean
+  last_triggered: string | null
+  mode: string | null
+  running: number
+  ours: boolean
+  spec: AutomationSpec | null
+}
+
+export interface AutomationTarget {
+  id: string
+  name: string
+  area: string | null
+  controls: (Pick<Control, "code" | "name" | "type" | "entity_id" | "state" | "options" | "min" | "max" | "unit" | "dimmable"> & {
+    action: boolean
+    trigger: boolean
+  })[]
 }
