@@ -56,6 +56,7 @@ import {
 } from "../ui"
 import { AddDialog, BulkAddDialog, targetFrom, type AddTarget } from "./AddDialog"
 import { RemotesPanel } from "./Remotes"
+import { SmartLifeLogin } from "./SmartLifeLogin"
 
 type Filter = "all" | "local" | "missing" | "attention"
 
@@ -1081,8 +1082,25 @@ function TuyaLogin({ config, onDone }: { config: TuyaConfig; onDone: () => void 
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,420px)_1fr]">
-      <Panel title={<span style={{ color: sourceColor("tuya") }}>Sign in to your Tuya cloud project</span>}>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Panel
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            <span style={{ color: sourceColor("tuya") }}>Sign in with Smart Life</span>
+            <Badge tone="ok">easiest</Badge>
+          </span>
+        }
+      >
+        <div className="space-y-3 p-4 text-sm">
+          <p className="text-muted">
+            No cloud project needed. Device Hub gets your devices, their local keys and their controls from the Smart Life
+            account, the same way Home Assistant's own Tuya integration signs in. IR remotes and removing devices still need
+            a cloud project.
+          </p>
+          <SmartLifeLogin onDone={() => onDone()} />
+        </div>
+      </Panel>
+      <Panel title={<span style={{ color: sourceColor("tuya") }}>Or use a Tuya cloud project</span>}>
         <form
           className="space-y-4 p-4"
           onSubmit={(e) => {
@@ -1123,9 +1141,8 @@ function TuyaLogin({ config, onDone }: { config: TuyaConfig; onDone: () => void 
             Connect
           </Button>
         </form>
-      </Panel>
-      <Panel title="Where to find these">
-        <ol className="list-decimal space-y-2 py-4 pr-4 pl-9 text-sm text-muted">
+        <p className="border-t border-line px-4 pt-3 text-sm font-medium">Where to find these</p>
+        <ol className="list-decimal space-y-2 pt-2 pr-4 pb-4 pl-9 text-sm text-muted">
           <li>Open iot.tuya.com, then Cloud, Development, and your project.</li>
           <li>Copy the Access ID and Access Secret from the Overview tab.</li>
           <li>
@@ -1134,7 +1151,7 @@ function TuyaLogin({ config, onDone }: { config: TuyaConfig; onDone: () => void 
           </li>
           <li>
             Paste them into Settings, Apps, Device Hub, Configuration. Saving restarts this app and signs in. You can also
-            connect from the form on the left.
+            connect from the form above.
           </li>
         </ol>
       </Panel>

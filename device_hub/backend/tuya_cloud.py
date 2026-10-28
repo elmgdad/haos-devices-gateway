@@ -1,4 +1,8 @@
-"""Tuya IoT Platform cloud project: login, device list with local keys."""
+"""Tuya cloud: a cloud project on the Tuya IoT Platform, or a Smart Life sign-in, for the device list with local keys.
+
+With a project, everything goes through it. Without one, a Smart Life sign-in
+(tuya_account.py) covers the device list, status, data points and commands.
+"""
 
 import asyncio
 import json
@@ -11,6 +15,7 @@ import tinytuya
 import urllib3.util.connection
 
 from . import store
+from .tuya_account import Account
 
 # tinytuya calls requests without a timeout, and on hosts with a global but unroutable
 # IPv6 address the AAAA records of openapi.tuya*.com hang forever.
@@ -51,10 +56,19 @@ class TuyaCloud:
         self._shadow_cache = {}
         self._control_cache = {}
         self._denied = {}
+        self.account = Account()
+
+    @property
+    def project(self):
+        return self._cloud is not None and bool(self._cloud.token)
 
     @property
     def connected(self):
-        return self._cloud is not None and bool(self._cloud.token)
+        return self.project or self.account.connected
+
+    @property
+    def mode(self):
+        return "project" if self.project else "account" if self.account.connected else None
 
     def config(self):
         return {
@@ -62,6 +76,9 @@ class TuyaCloud:
             "region": self._creds.get("region", "eu"),
             "has_secret": bool(self._creds.get("secret")),
             "connected": self.connected,
+            "mode": self.mode,
+            "project": self.project,
+            "account": self.account.public(),
             "device_count": len(self.devices),
             "fetched_at": self.fetched_at,
             "error": self.error,
@@ -90,11 +107,28 @@ class TuyaCloud:
         await self.list(refresh=True)
 
     def logout(self):
+        """Forget the cloud project. A Smart Life sign-in, if any, takes over."""
         self._cloud = None
         self._creds = {}
         self.devices = []
         self.fetched_at = 0
         store.remove("tuya")
+
+    def account_start(self, user_code):
+        return self.account.start(user_code)
+
+    async def account_finish(self, token):
+        done = await asyncio.to_thread(self.account.finish, token)
+        if done:
+            self.error = None
+            await self.list(refresh=True)
+        return done
+
+    def account_logout(self):
+        self.account.logout()
+        if not self.project:
+            self.devices = []
+            self.fetched_at = 0
 
     async def list(self, refresh=False):
         if not self.connected:
@@ -102,7 +136,8 @@ class TuyaCloud:
         async with self._lock:
             if refresh or time.time() - self.fetched_at > CACHE_SECONDS:
                 try:
-                    self.devices = await asyncio.to_thread(_fetch_devices, self._cloud)
+                    fetch = (lambda: _fetch_devices(self._cloud)) if self.project else self.account.fetch_devices
+                    self.devices = await asyncio.to_thread(fetch)
                     self.fetched_at = time.time()
                     self.error = None
                 except Exception as exc:
@@ -119,7 +154,7 @@ class TuyaCloud:
         device = self.by_id(device_id)
         if not device:
             raise RuntimeError("That device is not in this Tuya project.")
-        status, functions, blocked = await asyncio.to_thread(_read_control, self._cloud, device_id)
+        status, functions, blocked = await asyncio.to_thread(self._read_control, device_id)
         return {
             "id": device_id,
             "name": device.get("name") or device_id,
@@ -142,19 +177,24 @@ class TuyaCloud:
             cleaned.append({"code": code, "value": _coerce(command.get("value"))})
         if not cleaned:
             raise RuntimeError("Choose a command to send.")
-        await asyncio.to_thread(_send, self._cloud, device_id, cleaned)
+        if self.project:
+            await asyncio.to_thread(_send, self._cloud, device_id, cleaned)
+        else:
+            await asyncio.to_thread(self.account.send, device_id, cleaned)
         return await self.control(device_id)
 
     async def issue(self, device_id, properties):
         """Write thing-model properties. Used for devices the standard command API refuses."""
-        self._require()
+        self._require_project("This control")
         if not properties:
             raise RuntimeError("Choose a command to send.")
         await asyncio.to_thread(_issue, self._cloud, device_id, properties)
 
     async def garage_action(self, device_id):
-        """The RF copier's execute slot for button 2, which is the garage on/off."""
+        """The RF copier's execute slot for button 2, which is the garage on/off. It needs the thing model of a project."""
         self._require()
+        if not self.project:
+            return None
         try:
             props = await self._shadow(device_id)
         except Exception:
@@ -174,7 +214,7 @@ class TuyaCloud:
         if now < self._denied.get(device_id, 0):
             return []
         try:
-            status, functions, _blocked = await asyncio.to_thread(_read_control, self._cloud, device_id)
+            status, functions, _blocked = await asyncio.to_thread(self._read_control, device_id)
         except Exception:
             self._denied[device_id] = now + DENIED_SECONDS
             return []
@@ -211,11 +251,18 @@ class TuyaCloud:
 
     async def spec(self, device_id):
         self._require()
-        return await asyncio.to_thread(_read_spec, self._cloud, device_id)
+        if self.project:
+            return await asyncio.to_thread(_read_spec, self._cloud, device_id)
+        return await asyncio.to_thread(self.account.read_spec, device_id)
+
+    def _read_control(self, device_id):
+        return _read_control(self._cloud, device_id) if self.project else self.account.read_control(device_id)
 
     async def remove(self, device_id):
         """Unbind the device from the Smart Life account. It has to be paired again to come back."""
         self._require()
+        if not self.project:
+            raise RuntimeError("Removing needs a Tuya cloud project. With a Smart Life sign-in, remove it in the Smart Life app.")
         if not self.by_id(device_id):
             raise RuntimeError("That device is not in this Tuya project.")
         payload = await asyncio.to_thread(self._cloud.cloudrequest, f"/v1.0/devices/{device_id}", "DELETE")
@@ -229,7 +276,11 @@ class TuyaCloud:
 
     def _require(self):
         if not self.connected:
-            raise RuntimeError("Sign in to the Tuya cloud project first.")
+            raise RuntimeError("Sign in to Tuya first: with the Smart Life app, or with a cloud project.")
+
+    def _require_project(self, what):
+        if not self.project:
+            raise RuntimeError(f"{what} needs a Tuya cloud project. A Smart Life sign-in does not cover it.")
 
 
 def _initial_creds():

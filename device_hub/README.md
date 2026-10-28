@@ -2,6 +2,7 @@
 
 Tuya, Tuya Local, Zigbee2MQTT, ZHA, Sonoff and the devices on your network, on one screen inside Home Assistant.
 
+- **Sign in to Tuya with the Smart Life app**: your user code and a QR code, no developer account.
 - **Control every device** from one list, with live switches, dimmers, modes, covers, climate and IR keys.
 - **Areas**: switch a whole room on or off, and add, rename or delete areas.
 - **Automations** that run in Home Assistant: at a time, at sunrise or sunset, or when a device changes.

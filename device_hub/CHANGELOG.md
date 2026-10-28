@@ -1,3 +1,7 @@
+# 0.1.30
+
+Sign in to Tuya with the Smart Life app: enter your user code, scan the QR code in Smart Life, and Device Hub gets your devices, their local keys, status, controls and data points, with no cloud project. The sign-in refreshes itself and survives restarts. IR remotes and removing devices still need a cloud project, and Tuya leaves out the local key for some gateways and control panels. Settings, Tuya shows both sign-ins.
+
 # 0.1.29
 
 Device Hub has a logo: a hub joined to one dot for each system it brings together. It is the add-on icon and logo in Home Assistant, the panel's tab icon, and sits next to the title. The add-on has a README and a Documentation tab covering setup, every tab, removing devices, automations, the API, MCP, what is stored and troubleshooting.

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react"
 import { api } from "../api"
 import { clockTime, copyText, cx, errorText, timeAgo, usePoll } from "../lib"
 import type { ShareScope, Status } from "../types"
+import { SmartLifeLogin } from "./SmartLifeLogin"
 import { Badge, Button, Field, Input, Notice, Panel, Select, useFeedback } from "../ui"
 
 export default function SettingsTab({ status, onChanged }: { status: Status | null; onChanged: () => void }) {
@@ -53,6 +54,27 @@ export default function SettingsTab({ status, onChanged }: { status: Status | nu
       await api.reset()
       feedback.ok("Device Hub was reset.")
       await Promise.all([settings.reload(), tuya.reload()])
+      onChanged()
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const signOutAccount = async () => {
+    const ok = await feedback.confirm({
+      title: "Sign out of Smart Life?",
+      body: "Device Hub forgets the Smart Life sign-in. Devices already in Tuya Local or saved for local control keep working.",
+      action: "Sign out",
+      danger: true,
+    })
+    if (!ok) return
+    setBusy("account")
+    try {
+      await api.tuyaAccountLogout()
+      feedback.ok("Signed out of Smart Life.")
+      await tuya.reload()
       onChanged()
     } catch (exc) {
       feedback.fail(errorText(exc))
@@ -124,28 +146,53 @@ export default function SettingsTab({ status, onChanged }: { status: Status | nu
         </form>
       </Panel>
 
-      <Panel title="Tuya cloud project">
-        <div className="space-y-3 p-4 text-sm">
-          {tuya.data?.config.connected ? (
-            <>
-              <p>
-                Signed in with <span className="font-mono">{tuya.data.config.access_id}</span> in the{" "}
-                <b>{tuya.data.config.region}</b> data center. {tuya.data.config.device_count} devices.
-              </p>
-              {tuya.data.config.source === "app" ? (
-                <p className="text-muted">Taken from the Device Hub app configuration.</p>
-              ) : (
-                <Button variant="danger" busy={busy === "signout"} onClick={signOut}>
-                  Sign out
+      <Panel title="Tuya">
+        <div className="space-y-4 p-4 text-sm">
+          <div className="space-y-2">
+            <p className="font-medium">Smart Life sign-in</p>
+            {tuya.data?.config.account.connected ? (
+              <>
+                <p>
+                  Signed in{tuya.data.config.account.username ? <> as <b>{tuya.data.config.account.username}</b></> : null}
+                  {tuya.data.config.account.since ? ` since ${clockTime(tuya.data.config.account.since)}` : ""}.
+                  {tuya.data.config.project ? " The cloud project below is used while both are signed in." : ""}
+                </p>
+                <Button variant="danger" busy={busy === "account"} onClick={signOutAccount}>
+                  Sign out of Smart Life
                 </Button>
-              )}
-            </>
-          ) : (
-            <p className="text-muted">
-              Not signed in. Set the Access ID, Access Secret and data center in the Device Hub app configuration. Home
-              Assistant restarts the app and signs in.
-            </p>
-          )}
+              </>
+            ) : (
+              <SmartLifeLogin
+                onDone={() => {
+                  void tuya.reload()
+                  onChanged()
+                }}
+              />
+            )}
+          </div>
+          <div className="space-y-2 border-t border-line pt-4">
+            <p className="font-medium">Cloud project</p>
+            {tuya.data?.config.project ? (
+              <>
+                <p>
+                  Signed in with <span className="font-mono">{tuya.data.config.access_id}</span> in the{" "}
+                  <b>{tuya.data.config.region}</b> data center. {tuya.data.config.device_count} devices.
+                </p>
+                {tuya.data.config.source === "app" ? (
+                  <p className="text-muted">Taken from the Device Hub app configuration.</p>
+                ) : (
+                  <Button variant="danger" busy={busy === "signout"} onClick={signOut}>
+                    Sign out of the project
+                  </Button>
+                )}
+              </>
+            ) : (
+              <p className="text-muted">
+                Not set up. A project on iot.tuya.com adds IR remotes and removing devices. Set its Access ID, Access Secret
+                and data center in the Device Hub app configuration, or sign in from the Tuya tab.
+              </p>
+            )}
+          </div>
         </div>
       </Panel>
 

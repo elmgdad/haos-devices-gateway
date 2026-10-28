@@ -3,3 +3,5 @@ tinytuya>=1.17
 zeroconf>=0.140
 ifaddr>=0.2
 paho-mqtt>=2.1
+tuya-device-sharing-sdk>=0.2.1
+segno>=1.6

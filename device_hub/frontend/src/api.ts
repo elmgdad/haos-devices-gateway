@@ -26,6 +26,7 @@ import type {
   Status,
   TuyaConfig,
   TuyaControl,
+  TuyaQr,
   TuyaView,
   UnifiedDevice,
   WifiView,
@@ -97,6 +98,10 @@ export const api = {
   tuyaLogin: (access_id: string, secret: string, region: string) =>
     post<TuyaConfig>("/tuya/login", { access_id, secret, region }),
   tuyaLogout: () => post<TuyaConfig>("/tuya/logout"),
+  tuyaAccountQr: (user_code: string) => post<TuyaQr>("/tuya/account/qr", { user_code }),
+  tuyaAccountWait: (token: string) =>
+    get<{ done: boolean; config: TuyaConfig }>(`/tuya/account/qr/${encodeURIComponent(token)}`),
+  tuyaAccountLogout: () => post<TuyaConfig>("/tuya/account/logout"),
   tuyaControl: (id: string) => get<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/control`),
   tuyaCommand: (id: string, code: string, value: boolean | number | string) =>
     post<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/commands`, { commands: [{ code, value }] }),

@@ -377,6 +377,16 @@ export interface TuyaConfig {
   error: string | null
   regions: Region[]
   source: string
+  mode: "project" | "account" | null
+  project: boolean
+  account: { connected: boolean; username: string; user_code: string; since: number | null }
+}
+
+export interface TuyaQr {
+  token: string
+  qr: string
+  svg: string
+  expires_in: number
 }
 
 export interface Gateway {

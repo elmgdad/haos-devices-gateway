@@ -590,9 +590,10 @@ class Hub:
                                  "Tuya devices it controls locally and learned IR remotes into Home Assistant."
                                  + (f" Last error: {mqtt['error']}" if mqtt.get("error") else "")),
                    {"label": "Open MQTT", "ha": "/config/integrations/integration/mqtt"}),
-            _check("tuya", "Tuya cloud project", True,
+            _check("tuya", "Tuya", True,
                    ("warn", f"Sign-in problem: {tuya['error']}") if tuya.get("error")
-                   else ("todo", "Sign in with the Access ID and Secret of your cloud project on iot.tuya.com.") if not tuya["connected"]
+                   else ("todo", "Sign in with the Smart Life app (your user code and a QR code), or with a cloud project "
+                                 "from iot.tuya.com.") if not tuya["connected"]
                    else ("warn", "Signed in, but no devices. Link your Smart Life account to the project under Devices, Link App Account.")
                    if not tuya["count"] else ("ok", f"{tuya['count']} devices with their local keys."),
                    {"label": "Open Tuya", "tab": "tuya"} if not tuya.get("count") else None),
@@ -677,6 +678,7 @@ class Hub:
         self.share.reset()
         self.scenes.reset()
         self.cloud.logout()
+        self.cloud.account_logout()
         for name in ("settings", "scan"):
             store.remove(name)
         self.scanner.results = []
@@ -1022,6 +1024,26 @@ def routes(hub: Hub):
     async def tuya_login(request):
         data = await body(request)
         await hub.cloud.login(data.get("access_id"), data.get("secret"), data.get("region"))
+        return web.json_response(hub.cloud.config())
+
+    @r.post("/api/tuya/account/qr")
+    async def tuya_account_qr(request):
+        data = await body(request)
+        return web.json_response(await asyncio.to_thread(hub.cloud.account_start, data.get("user_code")))
+
+    @r.get("/api/tuya/account/qr/{token}")
+    async def tuya_account_wait(request):
+        done = await hub.cloud.account_finish(request.match_info["token"])
+        if done:
+            hub.share.invalidate()
+            hub.activity.log("change", f"Signed in to Tuya with Smart Life{' as ' + done['username'] if done.get('username') else ''}")
+        return web.json_response({"done": bool(done), "config": hub.cloud.config()})
+
+    @r.post("/api/tuya/account/logout")
+    async def tuya_account_logout(_request):
+        await asyncio.to_thread(hub.cloud.account_logout)
+        hub.share.invalidate()
+        hub.activity.log("change", "Signed out of the Smart Life account")
         return web.json_response(hub.cloud.config())
 
     @r.post("/api/tuya/logout")

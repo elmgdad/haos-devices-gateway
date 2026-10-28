@@ -414,7 +414,7 @@ class IrRemotes:
     def _hub_request(self, method, url, body=None):
         cloud = self.hub.cloud._cloud
         if cloud is None:
-            raise RuntimeError("Sign in to the Tuya cloud project first. Tuya remotes are sent through it.")
+            raise RuntimeError("Tuya remotes are sent through a Tuya cloud project. A Smart Life sign-in does not cover them.")
         result = cloud.cloudrequest(url, action=method, post=body)
         if isinstance(result, dict) and result.get("success"):
             self.service, self._service_at = True, time.monotonic()

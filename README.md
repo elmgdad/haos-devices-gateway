@@ -29,7 +29,7 @@ Device Hub puts Tuya, Tuya Local, Zigbee2MQTT, ZHA, Sonoff (SonoffLAN) and the d
 2. Add `https://github.com/elmgdad/haos-devices-gateway`.
 3. Install **Device Hub**, start it, and open it from the sidebar.
 
-Device Hub needs the **Mosquitto** broker and the **MQTT** integration. Tuya also needs a cloud project on [iot.tuya.com](https://iot.tuya.com). Its **Setup** tab walks through the rest.
+Device Hub needs the **Mosquitto** broker and the **MQTT** integration. For Tuya, sign in with the Smart Life app (your user code and a QR code), or with a cloud project on [iot.tuya.com](https://iot.tuya.com). Its **Setup** tab walks through the rest.
 
 ## Documentation
 

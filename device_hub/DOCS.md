@@ -3,6 +3,7 @@
 Device Hub puts Tuya, Tuya Local, Zigbee2MQTT, ZHA, Sonoff (SonoffLAN) and the devices on your network on one screen inside Home Assistant. From there you can control every device, sort them into areas, build automations, and hand other apps a key to the same controls through an HTTP API or MCP.
 
 - [Install](#install)
+- [Signing in to Tuya](#signing-in-to-tuya)
 - [Configuration](#configuration)
 - [What you need](#what-you-need)
 - [The panel](#the-panel)
@@ -23,9 +24,22 @@ Device Hub puts Tuya, Tuya Local, Zigbee2MQTT, ZHA, Sonoff (SonoffLAN) and the d
 
 Updates appear in the same place. If a new version does not show up, use **⋮ → Check for updates** in the Add-on Store.
 
+## Signing in to Tuya
+
+Choose either way, on the Tuya tab or in **Settings → Tuya**.
+
+**With the Smart Life app** (easiest, no developer account):
+1. In Smart Life, open **Me → the settings gear → Account and Security → User Code**, and copy the code.
+2. Paste it into Device Hub and press **Show QR code**.
+3. In Smart Life, tap the scan icon at the top right of the Home screen, scan the code, and confirm. Device Hub finishes on its own.
+
+This is the sign-in Home Assistant's own Tuya integration uses. It gives Device Hub your devices, their local keys, status, controls and data points, and it lasts: tokens refresh by themselves. Tuya leaves out the local key for some gateways and control panels, and the sign-in does not cover IR remotes or removing devices. Those need a cloud project.
+
+**With a cloud project** on [iot.tuya.com](https://iot.tuya.com): use the options below, or sign in on the Tuya tab. When both are signed in, Device Hub uses the cloud project.
+
 ## Configuration
 
-All options are optional. You can also sign in to Tuya from the panel's Tuya tab instead.
+All options are optional. They are for a Tuya cloud project. The Smart Life sign-in needs none.
 
 | Option | What it is |
 | --- | --- |
@@ -44,7 +58,7 @@ Device Hub reads what is already in Home Assistant, so each system is only shown
 | | Needed for |
 | --- | --- |
 | **MQTT** (the Mosquitto broker add-on and the MQTT integration) | Required. Tuya devices that Device Hub controls on your network, and learned IR remotes, appear in Home Assistant through MQTT. |
-| **Tuya cloud project** | Required for Tuya. Device list, local keys, IR remotes. |
+| **Tuya**: a Smart Life sign-in or a cloud project | Required for Tuya. Device list, local keys and control. IR remotes and removing devices need the cloud project. |
 | **Tuya Local** (HACS) | Optional. Local control of Tuya devices through Home Assistant. |
 | **SonoffLAN** (HACS) | Optional. Sonoff and eWeLink devices. |
 | **Zigbee2MQTT** or **ZHA** | Optional. Zigbee devices. Use one or the other, not both. |
@@ -233,7 +247,8 @@ Everything lives in the add-on's `/data` folder, which Home Assistant includes i
 
 | File | Holds |
 | --- | --- |
-| `tuya.json` | The Tuya cloud sign-in, if you signed in from the panel. |
+| `tuya.json` | The Tuya cloud project sign-in, if you signed in from the panel. |
+| `tuya_account.json` | The Smart Life sign-in: user code and tokens. |
 | `local_control.json` | Devices saved for local control: local key, address, data points. |
 | `ir.json` | Learned IR remotes and buttons. |
 | `share.json` | API keys. |
