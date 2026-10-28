@@ -1,4 +1,5 @@
 import {
+  CloudOff,
   ExternalLink,
   HardDriveDownload,
   Plus,
@@ -12,7 +13,18 @@ import {
 } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { api } from "../api"
-import { copyText, cx, errorText, openInHa, sourceColor, timeAgo, usePoll } from "../lib"
+import {
+  copyText,
+  cx,
+  errorText,
+  matchesStatus,
+  openInHa,
+  removeEach,
+  sourceColor,
+  timeAgo,
+  usePoll,
+  type StatusFilter,
+} from "../lib"
 import type {
   LocalLink,
   LocalOverview,
@@ -37,6 +49,7 @@ import {
   Panel,
   SearchInput,
   Select,
+  StatusFilterTabs,
   Td,
   Th,
   useFeedback,
@@ -94,6 +107,7 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
   const areas = usePoll(api.areas)
   const [filter, setFilter] = useState<Filter>(focus === "local" ? "local" : "all")
   const [query, setQuery] = useState("")
+  const [status, setStatus] = useState<StatusFilter>("all")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [adding, setAdding] = useState<AddTarget | null>(null)
   const [controlling, setControlling] = useState<TuyaDevice | null>(null)
@@ -108,10 +122,11 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
       if (filter === "local" && !d.tuya_local) return false
       if (filter === "missing" && d.tuya_local) return false
       if (filter === "attention" && !needsAttention(d)) return false
+      if (!matchesStatus(d.online, status)) return false
       if (!q) return true
       return [d.name, d.product_name, d.category_name, d.id, d.lan_ip ?? ""].some((v) => v.toLowerCase().includes(q))
     })
-  }, [data, filter, query])
+  }, [data, filter, query, status])
 
   const refresh = async (cloud = false) => {
     if (cloud) {
@@ -178,6 +193,40 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
     if (ok) await run(`remove:${entryId}`, () => api.removeEntry(entryId), `Removed ${title} from Tuya Local.`)
   }
 
+  const unbound =
+    "Tuya unbinds it from your Smart Life account. To use it again, reset it and pair it in Smart Life."
+
+  const removeFromCloud = async (device: TuyaDevice) => {
+    const ok = await feedback.confirm({
+      title: `Remove ${device.name} from Tuya?`,
+      body: device.tuya_local
+        ? `${unbound} Its Tuya Local entry stays in Home Assistant; remove that too if you no longer need it.`
+        : unbound,
+      action: "Remove from Tuya",
+      danger: true,
+    })
+    if (ok) await run(`cloud:${device.id}`, () => api.tuyaRemove(device.id), `Removed ${device.name} from Tuya.`)
+  }
+
+  const removeOffline = async (offline: TuyaDevice[]) => {
+    const ok = await feedback.confirm({
+      title: `Remove ${offline.length} offline devices from Tuya?`,
+      body: `${offline.map((d) => d.name).join(", ")}. Tuya unbinds them from your Smart Life account. To use one again, reset it and pair it in Smart Life.`,
+      action: `Remove ${offline.length}`,
+      danger: true,
+    })
+    if (!ok) return
+    setBusy("cloud:offline")
+    try {
+      const failed = await removeEach(offline, (d) => api.tuyaRemove(d.id))
+      if (failed.length) feedback.fail(failed.map((f) => `${f.item.name}: ${f.error}`).join(" "))
+      if (failed.length < offline.length) feedback.ok(`Removed ${offline.length - failed.length} offline devices from Tuya.`)
+      await refresh()
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const readd = async (device: TuyaDevice) => {
     const link = device.tuya_local!
     const ok = await feedback.confirm({
@@ -207,6 +256,7 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
 
   const selectable = devices.filter((d) => !d.tuya_local)
   const chosen = (data.devices ?? []).filter((d) => selected.has(d.id) && !d.tuya_local)
+  const offlineDevices = data.devices.filter((d) => d.online === false)
   const driftCount = data.devices.filter((d) => d.drift.length && d.tuya_local).length
   const toggle = (id: string) =>
     setSelected((s) => {
@@ -292,12 +342,28 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
               </button>
             ))}
           </div>
+          <StatusFilterTabs
+            value={status}
+            onChange={setStatus}
+            online={data.devices.filter((d) => d.online === true).length}
+            offline={offlineDevices.length}
+          />
+          {status === "offline" && offlineDevices.length > 0 && (
+            <Button
+              variant="danger"
+              icon={<CloudOff className="size-4" />}
+              busy={busy === "cloud:offline"}
+              onClick={() => removeOffline(offlineDevices)}
+            >
+              Remove {offlineDevices.length} offline from Tuya
+            </Button>
+          )}
           <SearchInput value={query} onChange={setQuery} placeholder="Search name, product, IP" />
           {data.config.error && <span className="text-sm text-bad">{data.config.error}</span>}
         </div>
         {devices.length === 0 ? (
           <Empty title="No devices here">
-            {filter === "all"
+            {filter === "all" && status === "all"
               ? "Link your Smart Life account to the cloud project on iot.tuya.com (Devices, Link App Account), then refresh."
               : "Nothing matches this filter."}
           </Empty>
@@ -429,6 +495,14 @@ export default function TuyaTab({ focus, onChanged }: { focus: "all" | "local"; 
                             Reload
                           </Button>
                         )}
+                        <Button
+                          variant="ghost"
+                          aria-label={`Remove ${device.name} from Tuya`}
+                          title="Remove from Tuya account"
+                          busy={busy === `cloud:${device.id}`}
+                          onClick={() => removeFromCloud(device)}
+                          icon={<CloudOff className="size-4" />}
+                        />
                         {device.tuya_local && (
                           <Button
                             variant="ghost"

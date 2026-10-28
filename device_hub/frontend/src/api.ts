@@ -59,6 +59,7 @@ export const api = {
   tuyaControl: (id: string) => get<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/control`),
   tuyaCommand: (id: string, code: string, value: boolean | number | string) =>
     post<TuyaControl>(`/tuya/devices/${encodeURIComponent(id)}/commands`, { commands: [{ code, value }] }),
+  tuyaRemove: (id: string) => del(`/tuya/devices/${encodeURIComponent(id)}`),
   ir: () => get<IrView>("/ir"),
   irCreate: (name: string, blaster_id: string) => post<IrRemote>("/ir/remotes", { name, blaster_id }),
   irDelete: (id: string) => del(`/ir/remotes/${encodeURIComponent(id)}`),
@@ -102,6 +103,7 @@ export const api = {
 
   sonoff: () => get<SonoffView>("/sonoff"),
   sonoffSwitch: (entity_id: string, on: boolean) => post<SonoffView>("/sonoff/switch", { entity_id, on }),
+  sonoffRemove: (ha_device_id: string) => del(`/sonoff/devices/${ha_device_id}`),
 
   z2m: () => get<Z2mView>("/z2m"),
   z2mAddon: (action: "start" | "stop" | "restart") => post(`/z2m/addon/${action}`),

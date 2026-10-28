@@ -1,9 +1,23 @@
-import { ExternalLink } from "lucide-react"
+import { ExternalLink, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { api } from "../api"
-import { cx, errorText, openInHa, sourceColor, usePoll } from "../lib"
+import { cx, errorText, matchesStatus, openInHa, removeEach, sourceColor, usePoll, type StatusFilter } from "../lib"
 import type { SonoffDevice, SonoffSwitch } from "../types"
-import { AreaSelect, Badge, Button, Empty, Led, Notice, Panel, SearchInput, Signal, Td, Th, useFeedback } from "../ui"
+import {
+  AreaSelect,
+  Badge,
+  Button,
+  Empty,
+  Led,
+  Notice,
+  Panel,
+  SearchInput,
+  Signal,
+  StatusFilterTabs,
+  Td,
+  Th,
+  useFeedback,
+} from "../ui"
 
 function SwitchButton({
   item,
@@ -40,15 +54,61 @@ export default function SonoffTab({ onChanged }: { onChanged: () => void }) {
   const view = usePoll(api.sonoff, 10000)
   const areas = usePoll(api.areas)
   const [query, setQuery] = useState("")
+  const [status, setStatus] = useState<StatusFilter>("all")
   const [busy, setBusy] = useState<string | null>(null)
   const data = view.data
 
   const devices = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return (data?.devices ?? []).filter(
-      (d) => !q || [d.name, d.model, d.ip ?? "", d.id, d.area ?? ""].some((v) => v.toLowerCase().includes(q)),
-    )
-  }, [data, query])
+    return (data?.devices ?? [])
+      .filter((d) => matchesStatus(d.online, status))
+      .filter((d) => !q || [d.name, d.model, d.ip ?? "", d.id, d.area ?? ""].some((v) => v.toLowerCase().includes(q)))
+  }, [data, query, status])
+
+  const offline = (data?.devices ?? []).filter((d) => d.online === false)
+  const returnsOne = "SonoffLAN adds it back when it starts again while it is still in your eWeLink account. Delete it in the eWeLink app to remove it for good."
+  const returnsMany = "SonoffLAN adds them back when it starts again while they are still in your eWeLink account. Delete them in the eWeLink app to remove them for good."
+
+  const remove = async (device: SonoffDevice) => {
+    const ok = await feedback.confirm({
+      title: `Remove ${device.name}?`,
+      body: `It and its entities are removed from Home Assistant. ${returnsOne}`,
+      action: "Remove device",
+      danger: true,
+    })
+    if (!ok) return
+    setBusy(`remove:${device.id}`)
+    try {
+      await api.sonoffRemove(device.ha_device_id)
+      feedback.ok(`Removed ${device.name}.`)
+      await view.reload()
+      onChanged()
+    } catch (exc) {
+      feedback.fail(errorText(exc))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const removeOffline = async () => {
+    const ok = await feedback.confirm({
+      title: `Remove ${offline.length} offline Sonoff devices?`,
+      body: `${offline.map((d) => d.name).join(", ")}. They and their entities are removed from Home Assistant. ${returnsMany}`,
+      action: `Remove ${offline.length}`,
+      danger: true,
+    })
+    if (!ok) return
+    setBusy("remove:offline")
+    try {
+      const failed = await removeEach(offline, (d) => api.sonoffRemove(d.ha_device_id))
+      if (failed.length) feedback.fail(failed.map((f) => `${f.item.name}: ${f.error}`).join(" "))
+      if (failed.length < offline.length) feedback.ok(`Removed ${offline.length - failed.length} offline devices.`)
+      await view.reload()
+      onChanged()
+    } finally {
+      setBusy(null)
+    }
+  }
 
   const toggle = async (item: SonoffSwitch) => {
     const on = !(item.state === "on" || item.state === "open")
@@ -109,6 +169,22 @@ export default function SonoffTab({ onChanged }: { onChanged: () => void }) {
                 Open SonoffLAN
               </Button>
             )}
+            <StatusFilterTabs
+              value={status}
+              onChange={setStatus}
+              online={(data?.devices ?? []).filter((d) => d.online === true).length}
+              offline={offline.length}
+            />
+            {status === "offline" && offline.length > 0 && (
+              <Button
+                variant="danger"
+                icon={<Trash2 className="size-4" />}
+                busy={busy === "remove:offline"}
+                onClick={removeOffline}
+              >
+                Remove {offline.length} offline
+              </Button>
+            )}
             <SearchInput value={query} onChange={setQuery} placeholder="Search name, model, IP" />
           </>
         }
@@ -117,7 +193,9 @@ export default function SonoffTab({ onChanged }: { onChanged: () => void }) {
           <Empty title="Reading Sonoff devices" />
         ) : devices.length === 0 ? (
           <Empty title="No Sonoff devices">
-            {query ? "Nothing matches the search." : "SonoffLAN has no devices yet. Add them in the eWeLink app."}
+            {query || status !== "all"
+              ? "Nothing matches the search or status."
+              : "SonoffLAN has no devices yet. Add them in the eWeLink app."}
           </Empty>
         ) : (
           <div className="overflow-x-auto">
@@ -181,12 +259,22 @@ export default function SonoffTab({ onChanged }: { onChanged: () => void }) {
                       />
                     </Td>
                     <Td className="text-right">
-                      <Button
-                        icon={<ExternalLink className="size-4" />}
-                        onClick={() => openInHa(`/config/devices/device/${device.ha_device_id}`)}
-                      >
-                        Open in HA
-                      </Button>
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          icon={<ExternalLink className="size-4" />}
+                          onClick={() => openInHa(`/config/devices/device/${device.ha_device_id}`)}
+                        >
+                          Open in HA
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          title="Remove from Home Assistant"
+                          aria-label={`Remove ${device.name}`}
+                          icon={<Trash2 className="size-4" />}
+                          busy={busy === `remove:${device.id}`}
+                          onClick={() => remove(device)}
+                        />
+                      </div>
                     </Td>
                   </tr>
                 ))}

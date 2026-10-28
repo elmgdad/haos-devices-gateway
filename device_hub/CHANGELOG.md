@@ -1,3 +1,7 @@
+# 0.1.26
+
+All Devices, Tuya and Sonoff filter by status: online or offline. Each device has a remove button, and with Offline picked, one button removes every offline device. Tuya devices are unbound from the Smart Life account. Sonoff devices are removed from Home Assistant; SonoffLAN adds them back on its next start while they are still in eWeLink.
+
 # 0.1.25
 
 All Devices loads when Home Assistant has a HomeKit Bridge. Its device identifier has three parts, which stopped the list with "too many values to unpack".

@@ -12,7 +12,7 @@ import {
   type SelectHTMLAttributes,
 } from "react"
 import { api } from "./api"
-import { copyText, cx, errorText, SOURCES, sourceColor } from "./lib"
+import { copyText, cx, errorText, SOURCES, sourceColor, type StatusFilter } from "./lib"
 import type { Area, Source } from "./types"
 
 type Variant = "primary" | "quiet" | "danger" | "ghost"
@@ -456,5 +456,42 @@ export function Signal({ value, max = 255 }: { value: number | null; max?: numbe
       ))}
       <span className="ml-1.5 font-mono text-xs text-muted">{value}</span>
     </span>
+  )
+}
+
+export function StatusFilterTabs({
+  value,
+  onChange,
+  online,
+  offline,
+}: {
+  value: StatusFilter
+  onChange: (v: StatusFilter) => void
+  online: number
+  offline: number
+}) {
+  const options: { id: StatusFilter; label: string; count?: number }[] = [
+    { id: "all", label: "Any status" },
+    { id: "online", label: "Online", count: online },
+    { id: "offline", label: "Offline", count: offline },
+  ]
+  return (
+    <div className="flex rounded-md border border-line p-0.5" role="group" aria-label="Filter by status">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          onClick={() => onChange(option.id)}
+          aria-pressed={value === option.id}
+          className={cx(
+            "inline-flex items-center gap-1.5 rounded px-3 py-1 text-sm",
+            value === option.id ? "bg-ink text-card" : "text-muted hover:text-ink",
+          )}
+        >
+          {option.id !== "all" && <Led state={option.id === "online" ? "ok" : "warn"} />}
+          {option.label}
+          {option.count !== undefined && <span className="font-mono text-xs opacity-70">{option.count}</span>}
+        </button>
+      ))}
+    </div>
   )
 }

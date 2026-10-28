@@ -618,6 +618,15 @@ def routes(hub: Hub):
     async def tuya(request):
         return web.json_response(await hub.tuya_view(refresh=request.query.get("refresh") == "1"))
 
+    @r.delete("/api/tuya/devices/{device_id}")
+    async def tuya_remove(request):
+        device_id = request.match_info["device_id"]
+        await hub.cloud.remove(device_id)
+        if device_id in hub.local.profiles:
+            await hub.local.forget(device_id)
+        hub.share.invalidate()
+        return web.json_response({"ok": True})
+
     @r.post("/api/tuya/login")
     async def tuya_login(request):
         data = await body(request)
@@ -857,6 +866,12 @@ def routes(hub: Hub):
     @r.get("/api/sonoff")
     async def sonoff(_request):
         return web.json_response(await hub.sonoff.overview(await hub.ha.registries()))
+
+    @r.delete("/api/sonoff/devices/{ha_device_id}")
+    async def sonoff_remove(request):
+        await hub.sonoff.remove(request.match_info["ha_device_id"])
+        hub.share.invalidate()
+        return web.json_response({"ok": True})
 
     @r.post("/api/sonoff/switch")
     async def sonoff_switch(request):

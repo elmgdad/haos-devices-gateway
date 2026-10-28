@@ -89,6 +89,19 @@ class Sonoff:
         await self.ha.call_service(switch["domain"], service, {"entity_id": entity_id})
         return await self.overview()
 
+    async def remove(self, ha_device_id):
+        """Remove the device from Home Assistant. SonoffLAN adds it back on its next start while it is still in eWeLink."""
+        entries = await self.ha.call("config_entries/get", domain=DOMAIN)
+        entry_ids = {entry["entry_id"] for entry in entries or []}
+        devices = await self.ha.call("config/device_registry/list")
+        device = next((d for d in devices or [] if d["id"] == ha_device_id), None)
+        owned = [entry_id for entry_id in (device or {}).get("config_entries") or [] if entry_id in entry_ids]
+        if not owned:
+            raise RuntimeError("That is not a Sonoff device in Home Assistant.")
+        for entry_id in owned:
+            await self.ha.call("config/device_registry/remove_config_entry", device_id=ha_device_id, config_entry_id=entry_id)
+        self._diagnostics_at = 0.0
+
     async def _read_diagnostics(self, entry_ids):
         """SonoffLAN's own view: online, local or cloud, and the device's LAN address."""
         if time.monotonic() - self._diagnostics_at < 15:

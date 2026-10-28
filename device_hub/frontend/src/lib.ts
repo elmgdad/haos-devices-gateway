@@ -113,3 +113,25 @@ export function openInHa(path: string) {
 export function errorText(exc: unknown) {
   return exc instanceof Error ? exc.message : String(exc)
 }
+
+export type StatusFilter = "all" | "online" | "offline"
+
+/** Unknown status (null) only shows under "all". */
+export function matchesStatus(online: boolean | null | undefined, filter: StatusFilter) {
+  if (filter === "online") return online === true
+  if (filter === "offline") return online === false
+  return true
+}
+
+/** Remove one at a time so a failure does not stop the rest. Returns what could not be removed. */
+export async function removeEach<T>(items: T[], remove: (item: T) => Promise<unknown>) {
+  const failed: { item: T; error: string }[] = []
+  for (const item of items) {
+    try {
+      await remove(item)
+    } catch (exc) {
+      failed.push({ item, error: errorText(exc) })
+    }
+  }
+  return failed
+}

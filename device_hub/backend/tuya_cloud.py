@@ -207,6 +207,19 @@ class TuyaCloud:
         self._require()
         return await asyncio.to_thread(_read_spec, self._cloud, device_id)
 
+    async def remove(self, device_id):
+        """Unbind the device from the Smart Life account. It has to be paired again to come back."""
+        self._require()
+        if not self.by_id(device_id):
+            raise RuntimeError("That device is not in this Tuya project.")
+        payload = await asyncio.to_thread(self._cloud.cloudrequest, f"/v1.0/devices/{device_id}", "DELETE")
+        if isinstance(payload, dict) and payload.get("code") == 1106:
+            raise RuntimeError("Tuya does not let this cloud project remove that device. Remove it in the Smart Life app.")
+        _cloud_result(payload, "removal")
+        self.devices = [d for d in self.devices if d["id"] != device_id]
+        self._shadow_cache.pop(device_id, None)
+        self._control_cache.pop(device_id, None)
+
     def _require(self):
         if not self.connected:
             raise RuntimeError("Sign in to the Tuya cloud project first.")
