@@ -106,7 +106,7 @@ class Hub:
         mqtt_devices = {}
         ha_by_id = {ha_device["id"]: ha_device for ha_device in registries["devices"]}
         for ha_device in registries["devices"]:
-            for domain, identifier in ha_device.get("identifiers") or []:
+            for domain, identifier, *_ in ha_device.get("identifiers") or []:
                 if domain == "mqtt" and identifier.startswith("devicehub_tuya_"):
                     mqtt_devices[identifier.removeprefix("devicehub_tuya_")] = ha_device["id"]
 
@@ -426,7 +426,7 @@ class Hub:
             return
         areas = await self.ha.call("config/area_registry/list")
         name = next((item["name"] for item in areas or [] if item["area_id"] == area_id), None)
-        for domain, identifier in device.get("identifiers") or []:
+        for domain, identifier, *_ in device.get("identifiers") or []:
             if domain == "mqtt" and str(identifier).startswith("devicehub_tuya_"):
                 self.local.set_area(str(identifier).removeprefix("devicehub_tuya_"), area_id, name)
         self.share.invalidate()
@@ -515,7 +515,7 @@ async def _settings_view(hub: Hub):
 def _ir_devices(registries):
     found = {}
     for device in registries["devices"]:
-        for domain, identifier in device.get("identifiers") or []:
+        for domain, identifier, *_ in device.get("identifiers") or []:
             if domain == "mqtt" and str(identifier).startswith("devicehub_ir_"):
                 found[str(identifier).removeprefix("devicehub_ir_")] = device
     return found

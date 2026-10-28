@@ -31,7 +31,7 @@ class Sonoff:
         for device in registries["devices"]:
             if not set(device.get("config_entries") or []) & entry_ids:
                 continue
-            device_id = next((value for domain, value in device.get("identifiers") or [] if domain == DOMAIN), None)
+            device_id = next((value for domain, value, *_ in device.get("identifiers") or [] if domain == DOMAIN), None)
             if not device_id:
                 continue
             found = info["devices"].get(device_id) or {}

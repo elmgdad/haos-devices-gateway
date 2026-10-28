@@ -1,3 +1,7 @@
+# 0.1.25
+
+All Devices loads when Home Assistant has a HomeKit Bridge. Its device identifier has three parts, which stopped the list with "too many values to unpack".
+
 # 0.1.24
 
 The share API saves scenes that mix Sonoff, Zigbee and Tuya, then runs them together. Smart RF Copier button 2 is the garage on/off. The air conditioner on the Smart Control Panel Mini is a remote. Cloud-only Tuya devices, including the presence sensors, are listed too.

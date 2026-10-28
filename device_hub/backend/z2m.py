@@ -189,7 +189,7 @@ class Z2M:
         by_identifier = {}
         areas = (registries or {}).get("areas") or {}
         for device in (registries or {}).get("devices") or []:
-            for domain, value in device.get("identifiers") or []:
+            for domain, value, *_ in device.get("identifiers") or []:
                 if domain == "mqtt" and value.startswith("zigbee2mqtt_"):
                     by_identifier[value.removeprefix("zigbee2mqtt_")] = device
         devices = []
