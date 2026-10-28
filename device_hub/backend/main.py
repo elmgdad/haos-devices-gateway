@@ -3,18 +3,21 @@
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 
 import aiohttp
 from aiohttp import web
 
 from . import store
+from .activity import Activity
+from .events import Events
 from .ha import HAError, HomeAssistant
 from .hotspot import Hotspot
 from .ir import IrRemotes
 from .scanner import Scanner
 from .scenes import Scenes
-from .share import Shares
+from .share import PANEL, Shares
 from .sonoff import Sonoff
 from .tuya_bridge import LocalBridge
 from .tuya_cloud import TuyaCloud
@@ -30,7 +33,7 @@ INGRESS_PEERS = {"172.30.32.2", "127.0.0.1"}
 CORS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
 }
 
 
@@ -63,7 +66,7 @@ async def guard(request, handler):
     except Exception as exc:  # noqa: BLE001
         _LOGGER.exception("Request failed: %s", request.path)
         response = web.json_response({"error": f"Unexpected error: {exc}"}, status=500)
-    if shared:
+    if shared and not response.prepared:
         response.headers.update(CORS)
     return response
 
@@ -78,15 +81,24 @@ class Hub:
         self.tuya_local.bridge = self.local
         self.ir = IrRemotes(self)
         self.ir.attach()
+        self.activity = Activity()
         self.scenes = Scenes(self)
         self.share = Shares(self)
         self.hotspot = Hotspot(self.ha)
         self.zha = Zha(self.ha)
         self.z2m = Z2M(self.ha)
         self.sonoff = Sonoff(self.ha)
+        self.events = Events(self)
+        self._rows = None
 
-    async def tuya_view(self, refresh=False, registries=None):
-        devices = await self.cloud.list(refresh=refresh) if self.cloud.connected else []
+    async def tuya_view(self, refresh=False, registries=None, quiet=False):
+        """quiet uses the Tuya list already fetched, so a background check never spends cloud calls."""
+        if not self.cloud.connected:
+            devices = []
+        elif quiet and self.cloud.devices:
+            devices = self.cloud.devices
+        else:
+            devices = await self.cloud.list(refresh=refresh)
         registries = registries or await self.ha.registries()
         status = await self.tuya_local.status()
         entries = await self.tuya_local.entries(details=True, registries=registries) if status["installed"] else []
@@ -231,12 +243,12 @@ class Hub:
         return {"device_id": device_id, "host": host, "local_key": local_key, "protocol_version": protocol,
                 "device_cid": device_cid or None, "name": name}
 
-    async def all_devices(self):
+    async def all_devices(self, quiet=False):
         registries = await self.ha.registries()
         rows = []
         lan_claimed = set()
         try:
-            tuya = await self.tuya_view(registries=registries)
+            tuya = await self.tuya_view(registries=registries, quiet=quiet)
         except Exception as exc:  # noqa: BLE001
             tuya = {"devices": [], "unmatched_entries": [], "error": str(exc)}
         for device in tuya["devices"]:
@@ -397,7 +409,254 @@ class Hub:
             row["area_id"] = area_id
             if area_id and registries["areas"].get(area_id):
                 row["area"] = registries["areas"][area_id]
+        self._rows = rows
         return {"devices": rows, "areas": registries["areas"]}
+
+    async def _row(self, key):
+        for rows in (self._rows, None):
+            rows = rows if rows is not None else (await self.all_devices())["devices"]
+            found = next((row for row in rows if row["key"] == key), None)
+            if found:
+                return found
+        raise RuntimeError("Device Hub does not know that device. Refresh and try again.")
+
+    def _name(self, key):
+        return next((row["name"] for row in self._rows or [] if row["key"] == key), key)
+
+    async def remove_device(self, key, via="panel"):
+        """Remove a device from the system it belongs to. One place, so every removal is logged."""
+        prefix, _, ident = key.partition(":")
+        name = self._name(key)
+        try:
+            if prefix == "tuya":
+                await self.cloud.remove(ident)
+                if ident in self.local.profiles:
+                    await self.local.forget(ident)
+            elif prefix == "tuya_local":
+                await self.tuya_local.remove(ident)
+            elif prefix == "zha":
+                await self.zha.remove(ident)
+            elif prefix == "z2m":
+                await self.z2m.remove(ident)
+            elif prefix == "sonoff":
+                devices = await self.ha.call("config/device_registry/list")
+                device = next(
+                    (d for d in devices or []
+                     if any(domain == "sonoff" and str(value) == ident for domain, value, *_ in d.get("identifiers") or [])),
+                    None,
+                )
+                if not device:
+                    raise RuntimeError("That Sonoff device is not in Home Assistant.")
+                await self.sonoff.remove(device["id"])
+            elif prefix == "ir":
+                self.ir.delete(ident)
+            else:
+                raise RuntimeError("Device Hub cannot remove a device it only saw on the network.")
+        except Exception as exc:
+            self.activity.log("remove", f"Could not remove {name}: {exc}", device_id=key, device=name, ok=False, via=via)
+            raise
+        self._rows = [row for row in self._rows or [] if row["key"] != key]
+        self.share.invalidate()
+        self.activity.log("remove", f"Removed {name}", device_id=key, device=name, via=via)
+        return {"ok": True}
+
+    async def update_device(self, key, changes, via="panel"):
+        row = await self._row(key)
+        if not row.get("ha_device_id"):
+            raise RuntimeError("This device is not in Home Assistant yet, so it cannot be renamed or given an area.")
+        payload = {}
+        if "name" in changes:
+            payload["name_by_user"] = str(changes.get("name") or "").strip() or None
+        if "area_id" in changes:
+            payload["area_id"] = changes.get("area_id") or None
+        if not payload:
+            raise RuntimeError("Send a name or an area_id.")
+        updated = await self.ha.call("config/device_registry/update", device_id=row["ha_device_id"], **payload)
+        area = None
+        if "area_id" in payload:
+            await self.remember_area(row["ha_device_id"], payload["area_id"])
+            areas = await self.ha.call("config/area_registry/list")
+            area = next((a["name"] for a in areas or [] if a["area_id"] == payload["area_id"]), payload["area_id"])
+        self._log_change(key, row["name"], payload, updated, area, via)
+        self._rows = None
+        self.share.invalidate()
+        return {"ok": True}
+
+    def _log_change(self, key, before, payload, updated, area, via):
+        updated = updated or {}
+        parts = []
+        if "name_by_user" in payload:
+            after = updated.get("name_by_user") or updated.get("name") or before
+            parts.append(f"renamed to {after}" if payload["name_by_user"] else f"name reset to {after}")
+        if "area_id" in payload:
+            parts.append(f"moved to {area}" if payload["area_id"] else "taken out of its area")
+        self.activity.log("change", f"{before} " + " and ".join(parts), device_id=key, device=before, via=via)
+
+    async def device_detail(self, key):
+        row = await self._row(key)
+        registries = await self.ha.registries()
+        ha_device = next((d for d in registries["devices"] if d["id"] == row.get("ha_device_id")), None)
+        index = await self.share.ha_index()
+        entities = []
+        for entity in index["by_device"].get(row.get("ha_device_id") or "") or []:
+            attributes = index["attributes"].get(entity["entity_id"]) or {}
+            entities.append({
+                "entity_id": entity["entity_id"],
+                "name": entity.get("name") or entity.get("original_name") or attributes.get("friendly_name") or entity["entity_id"],
+                "domain": entity["entity_id"].split(".", 1)[0],
+                "state": index["states"].get(entity["entity_id"]),
+                "unit": attributes.get("unit_of_measurement"),
+                "category": entity.get("entity_category"),
+            })
+        entities.sort(key=lambda item: (item["category"] is not None, item["entity_id"]))
+        ha = None
+        if ha_device:
+            via = next((d for d in registries["devices"] if d["id"] == ha_device.get("via_device_id")), None)
+            ha = {
+                "id": ha_device["id"],
+                "name": ha_device.get("name"),
+                "name_by_user": ha_device.get("name_by_user"),
+                "manufacturer": ha_device.get("manufacturer"),
+                "model": ha_device.get("model"),
+                "model_id": ha_device.get("model_id"),
+                "sw_version": ha_device.get("sw_version"),
+                "hw_version": ha_device.get("hw_version"),
+                "serial_number": ha_device.get("serial_number"),
+                "configuration_url": ha_device.get("configuration_url"),
+                "via": (via or {}).get("name_by_user") or (via or {}).get("name"),
+                "integrations": sorted({registries["entry_domains"].get(e, e) for e in ha_device.get("config_entries") or []}),
+                "disabled": bool(ha_device.get("disabled_by")),
+            }
+        return {
+            "device": row,
+            "ha": ha,
+            "entities": entities,
+            "activity": self.activity.list(30, device_id=key),
+            "removable": key.partition(":")[0] in REMOVABLE,
+        }
+
+    async def bulk(self, keys, action, area_id=None):
+        """Do one thing to many devices. One failing does not stop the rest."""
+        if action not in ("area", "on", "off", "remove"):
+            raise RuntimeError("Choose area, on, off or remove.")
+        if not keys:
+            raise RuntimeError("Pick at least one device.")
+        catalog = {item["id"]: item for item in await self.share.catalog()} if action in ("on", "off") else {}
+        results = []
+        for key in keys:
+            try:
+                if action == "area":
+                    await self.update_device(key, {"area_id": area_id})
+                elif action == "remove":
+                    await self.remove_device(key)
+                else:
+                    item = catalog.get(key)
+                    switches = [c for c in (item or {}).get("controls", [])
+                                if c["writable"] and c["primary"] and c["type"] in ON_OFF]
+                    if not switches:
+                        raise RuntimeError("It has no on or off control.")
+                    await self.share.command(PANEL, key, [{"code": c["code"], "value": action == "on"} for c in switches])
+                results.append({"key": key, "name": self._name(key), "ok": True})
+            except Exception as exc:  # noqa: BLE001
+                results.append({"key": key, "name": self._name(key), "ok": False, "error": str(exc) or exc.__class__.__name__})
+        return {"results": results}
+
+    async def setup(self):
+        """A checklist of what is connected, what is missing, and how to fix it."""
+        status = await self.status()
+        mqtt = self.local.mqtt.info()
+        try:
+            rows = (await self.all_devices(quiet=True))["devices"]
+        except Exception:  # noqa: BLE001
+            rows = self._rows or []
+        tuya, local, sonoff, z2m, zha, lan = (status[k] for k in ("tuya", "tuya_local", "sonoff", "z2m", "zha", "lan"))
+        no_area = [r for r in rows if r.get("ha_device_id") and not r.get("area_id")]
+        offline = [r for r in rows if r.get("online") is False]
+        items = [
+            _check("ha", "Home Assistant", True,
+                   ("ok", "Connected.") if status["ha_connected"]
+                   else ("warn", "Device Hub cannot reach Home Assistant. It retries every few seconds."), None),
+            _check("mqtt", "MQTT broker", True,
+                   ("ok", f"Connected to {mqtt.get('host') or 'the broker'}.") if mqtt.get("state") == "connected"
+                   else ("optional", "Dev mode: the Device Hub app on Home Assistant publishes these entities, not this copy.")
+                   if self.ha.mode == "dev"
+                   else ("todo", "Install the Mosquitto broker app and the MQTT integration. Device Hub uses MQTT to put "
+                                 "Tuya devices it controls locally and learned IR remotes into Home Assistant."
+                                 + (f" Last error: {mqtt['error']}" if mqtt.get("error") else "")),
+                   {"label": "Open MQTT", "ha": "/config/integrations/integration/mqtt"}),
+            _check("tuya", "Tuya cloud project", True,
+                   ("warn", f"Sign-in problem: {tuya['error']}") if tuya.get("error")
+                   else ("todo", "Sign in with the Access ID and Secret of your cloud project on iot.tuya.com.") if not tuya["connected"]
+                   else ("warn", "Signed in, but no devices. Link your Smart Life account to the project under Devices, Link App Account.")
+                   if not tuya["count"] else ("ok", f"{tuya['count']} devices with their local keys."),
+                   {"label": "Open Tuya", "tab": "tuya"} if not tuya.get("count") else None),
+            _check("tuya_local", "Tuya Local", False,
+                   ("optional", "Install Tuya Local from HACS to control Tuya devices on your network, without the cloud.")
+                   if not local["installed"]
+                   else ("warn", f"{local['problems']} entries are not loaded.") if local.get("problems")
+                   else ("ok", f"{local['count']} entries.") if local.get("count")
+                   else ("ok", "Installed. Add devices to it from the Tuya tab."),
+                   {"label": "Get Tuya Local", "url": local.get("hacs_url") or "https://github.com/make-all/tuya-local"}
+                   if not local["installed"] else {"label": "Open Tuya Local", "tab": "tuya_local"} if local.get("problems") else None),
+            _check("sonoff", "Sonoff (SonoffLAN)", False,
+                   ("optional", "Install SonoffLAN from HACS to add eWeLink and Sonoff devices.") if not sonoff["installed"]
+                   else ("warn", f"{sonoff['offline']} of {sonoff['count']} devices are offline.") if sonoff.get("offline")
+                   else ("ok", f"{sonoff['count']} devices, {sonoff['local']} on your network."),
+                   {"label": "Get SonoffLAN", "url": "https://github.com/AlexxIT/SonoffLAN"} if not sonoff["installed"]
+                   else {"label": "Open Sonoff", "tab": "sonoff"} if sonoff.get("offline") else None),
+            _check("z2m", "Zigbee2MQTT", False,
+                   ("optional", "For Zigbee devices on a USB stick. Use Zigbee2MQTT or ZHA, not both.") if not z2m["installed"]
+                   else ("warn", "Installed but not running.") if z2m.get("state") != "started"
+                   else ("warn", f"Running, bridge {z2m.get('bridge') or 'unknown'}.") if z2m.get("bridge") != "online"
+                   else ("ok", f"{z2m['count']} devices."),
+                   {"label": "Open add-on store", "ha": "/hassio/store"} if not z2m["installed"]
+                   else {"label": "Open Zigbee2MQTT", "tab": "z2m"} if z2m.get("state") != "started" or z2m.get("bridge") != "online" else None),
+            _check("zha", "ZHA", False,
+                   ("ok", f"{zha['count']} devices.") if zha["loaded"]
+                   else ("warn", "Set up, but not running.") if zha["entries"]
+                   else ("optional", "Home Assistant's own Zigbee integration. Use it or Zigbee2MQTT, not both."),
+                   {"label": "Add ZHA", "ha": "/config/integrations/dashboard/add?domain=zha"} if not zha["entries"]
+                   else {"label": "Open ZHA", "tab": "zha"} if not zha["loaded"] else None),
+            _check("scan", "Network scan", False,
+                   ("ok", f"{lan['count']} smart devices among {lan['hosts']} on the network.") if lan.get("finished_at")
+                   else ("todo", "Scan the network once so Device Hub knows each device's IP. Tuya Local needs it."),
+                   {"label": "Open Network", "tab": "network"} if not lan.get("finished_at") else None),
+            _check("areas", "Areas", False,
+                   ("warn", f"{len(no_area)} devices in Home Assistant have no area. Apps group devices by area.") if no_area
+                   else ("ok", "Every device in Home Assistant has an area."),
+                   {"label": "Show devices", "tab": "all"} if no_area else None),
+            _check("offline", "Offline devices", False,
+                   ("warn", f"{len(offline)} devices are offline: "
+                            + ", ".join(r["name"] for r in offline[:6]) + ("…" if len(offline) > 6 else "")
+                            + ". Check power and Wi-Fi, or remove ones you no longer have.") if offline
+                   else ("ok", "Every device reports in."),
+                   {"label": "Show offline", "tab": "all", "status": "offline"} if offline else None),
+            _check("api", "API keys", False,
+                   ("ok", f"{len(self.share.tokens)} keys.") if self.share.tokens
+                   else ("optional", "Create a key to control devices from your phone app or another system."),
+                   {"label": "Open Share", "tab": "settings"} if not self.share.tokens else None),
+        ]
+        return {"items": items}
+
+    async def watch(self):
+        """Note devices going offline or coming back, for the activity log and live updates."""
+        seen = None
+        while True:
+            await asyncio.sleep(60 if seen is not None else 20)
+            try:
+                rows = (await self.all_devices(quiet=True))["devices"]
+            except Exception:  # noqa: BLE001
+                continue
+            now = {row["key"]: (row["online"], row["name"]) for row in rows if row.get("online") is not None}
+            if seen is not None:
+                for key, (online, name) in now.items():
+                    before = seen.get(key)
+                    if before is None or before[0] == online:
+                        continue
+                    text = f"{name} came back online" if online else f"{name} went offline"
+                    self.activity.log("online" if online else "offline", text, device_id=key, device=name, via="watcher")
+                    self.events.publish("device", {"device_id": key, "name": name, "online": online, "at": time.time()}, key)
+            seen = now
 
     async def reset(self):
         """Forget everything Device Hub saved and remove what it published to Home Assistant.
@@ -512,6 +771,15 @@ async def _settings_view(hub: Hub):
     return current
 
 
+REMOVABLE = {"tuya", "tuya_local", "zha", "z2m", "sonoff", "ir"}
+ON_OFF = {"Boolean", "switch", "light", "fan", "input_boolean"}
+
+
+def _check(check_id, title, required, outcome, action):
+    state, detail = outcome
+    return {"id": check_id, "title": title, "required": required, "state": state, "detail": detail, "action": action}
+
+
 def _ir_devices(registries):
     found = {}
     for device in registries["devices"]:
@@ -521,11 +789,36 @@ def _ir_devices(registries):
     return found
 
 
+PUBLIC_ACTIVITY = {"command", "scene", "remove", "change", "offline", "online"}
+
+
+def _filter_devices(devices, query):
+    status = query.get("status")
+    area = (query.get("area") or "").strip().lower()
+    source = query.get("source")
+    text = (query.get("q") or "").strip().lower()
+    shown = []
+    for item in devices:
+        if status == "online" and item.get("online") is not True:
+            continue
+        if status == "offline" and item.get("online") is not False:
+            continue
+        if area and area not in ((item.get("area_id") or "").lower(), (item.get("area") or "").lower()):
+            continue
+        if source and item.get("source") != source:
+            continue
+        if text and text not in f"{item['name']} {item.get('area') or ''}".lower():
+            continue
+        shown.append(item)
+    return shown
+
+
 def _public_device(item):
     return {
         "id": item["id"],
         "name": item["name"],
         "area": item.get("area"),
+        "area_id": item.get("area_id"),
         "online": item.get("online"),
         "source": item.get("source"),
         "role": item.get("role"),
@@ -534,7 +827,8 @@ def _public_device(item):
             {
                 key: control[key]
                 for key in ("code", "name", "type", "entity_id", "state", "writable", "primary",
-                            "options", "min", "max", "step", "scale", "unit")
+                            "options", "min", "max", "step", "scale", "unit",
+                            "dimmable", "brightness", "target", "current", "position")
                 if key in control
             }
             for control in item["controls"]
@@ -605,10 +899,61 @@ def routes(hub: Hub):
         if "area_id" in data:
             payload["area_id"] = data["area_id"] or None
         device_id = request.match_info["device_id"]
+        key = next((row["key"] for row in hub._rows or [] if row.get("ha_device_id") == device_id), None)
+        if key and payload:
+            await hub.update_device(key, {k.replace("name_by_user", "name"): v for k, v in payload.items()})
+            return web.json_response({"ok": True})
         await hub.ha.call("config/device_registry/update", device_id=device_id, **payload)
         if "area_id" in data:
             await hub.remember_area(device_id, data.get("area_id") or None)
         return web.json_response({"ok": True})
+
+    @r.get("/api/control/{key}")
+    async def control_get(request):
+        key = request.match_info["key"]
+        return web.json_response(next((item for item in await hub.share.catalog() if item["id"] == key), None))
+
+    @r.post("/api/control/{key}")
+    async def control_send(request):
+        data = await body(request)
+        return web.json_response(await hub.share.command(PANEL, request.match_info["key"], data.get("commands")))
+
+    @r.post("/api/devices/bulk")
+    async def devices_bulk(request):
+        data = await body(request)
+        keys = [str(k) for k in data.get("keys") or [] if k]
+        return web.json_response(await hub.bulk(keys, data.get("action"), data.get("area_id")))
+
+    @r.get("/api/devices/{key}/detail")
+    async def device_detail(request):
+        return web.json_response(await hub.device_detail(request.match_info["key"]))
+
+    @r.post("/api/devices/{key}")
+    async def device_update(request):
+        data = await body(request)
+        return web.json_response(await hub.update_device(request.match_info["key"], data))
+
+    @r.delete("/api/devices/{key}")
+    async def device_remove(request):
+        return web.json_response(await hub.remove_device(request.match_info["key"]))
+
+    @r.get("/api/activity")
+    async def activity(request):
+        limit = min(int(request.query.get("limit") or 200), 500)
+        return web.json_response({"activity": hub.activity.list(limit, kind=request.query.get("kind") or None)})
+
+    @r.delete("/api/activity")
+    async def activity_clear(_request):
+        hub.activity.clear()
+        return web.json_response({"ok": True})
+
+    @r.get("/api/setup")
+    async def setup(_request):
+        return web.json_response(await hub.setup())
+
+    @r.get("/api/events")
+    async def events(request):
+        return await hub.events.stream(request)
 
     @r.get("/api/devices/all")
     async def all_devices(_request):
@@ -620,12 +965,7 @@ def routes(hub: Hub):
 
     @r.delete("/api/tuya/devices/{device_id}")
     async def tuya_remove(request):
-        device_id = request.match_info["device_id"]
-        await hub.cloud.remove(device_id)
-        if device_id in hub.local.profiles:
-            await hub.local.forget(device_id)
-        hub.share.invalidate()
-        return web.json_response({"ok": True})
+        return web.json_response(await hub.remove_device(f"tuya:{request.match_info['device_id']}"))
 
     @r.post("/api/tuya/login")
     async def tuya_login(request):
@@ -715,7 +1055,9 @@ def routes(hub: Hub):
     @r.post("/api/share")
     async def share_create(request):
         data = await body(request)
-        created = hub.share.create(data.get("name"), data.get("device_ids"))
+        created = hub.share.create(
+            data.get("name"), data.get("device_ids"), data.get("scope") or "control", data.get("expires_in_days")
+        )
         return web.json_response(created)
 
     @r.delete("/api/share/{token_id}")
@@ -730,10 +1072,14 @@ def routes(hub: Hub):
             return web.Response(text=hub.share.describe_html(await hub.api_base()), content_type="text/html")
         return web.json_response(docs)
 
+    @r.get("/api/v1/openapi.json")
+    async def share_openapi(_request):
+        return web.json_response(hub.share.openapi(await hub.api_base()), headers=CORS)
+
     @r.get("/api/v1/devices")
     async def share_devices(request):
         token = hub.share.require(request)
-        devices = await hub.share.devices_for(token)
+        devices = _filter_devices(await hub.share.devices_for(token), request.query)
         return web.json_response({"devices": [_public_device(item) for item in devices]})
 
     @r.get("/api/v1/devices/{device_id}")
@@ -743,10 +1089,51 @@ def routes(hub: Hub):
 
     @r.post("/api/v1/devices/{device_id}/commands")
     async def share_command(request):
-        token = hub.share.require(request)
+        token = hub.share.require(request, "control")
         data = await body(request)
         device = await hub.share.command(token, request.match_info["device_id"], data.get("commands"))
         return web.json_response(_public_device(device))
+
+    @r.patch("/api/v1/devices/{device_id}")
+    async def share_update(request):
+        token = hub.share.require(request, "manage")
+        device = await hub.share.device_for(token, request.match_info["device_id"])
+        data = await body(request)
+        await hub.update_device(device["id"], {k: data[k] for k in ("name", "area_id") if k in data},
+                                via=f"API key {token['name']}")
+        return web.json_response(_public_device(await hub.share.device_for(token, device["id"])))
+
+    @r.delete("/api/v1/devices/{device_id}")
+    async def share_remove(request):
+        token = hub.share.require(request, "manage")
+        device = await hub.share.device_for(token, request.match_info["device_id"])
+        return web.json_response(await hub.remove_device(device["id"], via=f"API key {token['name']}"))
+
+    @r.get("/api/v1/areas")
+    async def share_areas(request):
+        token = hub.share.require(request)
+        devices = await hub.share.devices_for(token)
+        items = await hub.ha.call("config/area_registry/list")
+        counts = {}
+        for item in devices:
+            counts[item.get("area_id")] = counts.get(item.get("area_id"), 0) + 1
+        return web.json_response({"areas": [
+            {"id": a["area_id"], "name": a["name"], "devices": counts.get(a["area_id"], 0)} for a in items or []
+        ]})
+
+    @r.get("/api/v1/activity")
+    async def share_activity(request):
+        token = hub.share.require(request)
+        ids = {item["id"] for item in await hub.share.devices_for(token)}
+        wanted = request.query.get("device_id")
+        limit = min(int(request.query.get("limit") or 100), 500)
+        entries = hub.activity.list(limit, device_id=wanted, device_ids=ids)
+        return web.json_response({"activity": [entry for entry in entries if entry["kind"] in PUBLIC_ACTIVITY]})
+
+    @r.get("/api/v1/events")
+    async def share_events(request):
+        token = hub.share.require(request, allow_query=True)
+        return await hub.events.stream(request, allowed=set(token["device_ids"]))
 
     @r.get("/api/v1/scenes")
     async def scenes_list(request):
@@ -755,19 +1142,25 @@ def routes(hub: Hub):
 
     @r.post("/api/v1/scenes")
     async def scenes_create(request):
-        token = hub.share.require(request)
+        token = hub.share.require(request, "control")
         data = await body(request)
         return web.json_response(await hub.scenes.create(token, data.get("name"), data.get("actions")))
 
     @r.delete("/api/v1/scenes/{scene_id}")
     async def scenes_delete(request):
-        hub.share.require(request)
+        hub.share.require(request, "control")
         return web.json_response(hub.scenes.delete(request.match_info["scene_id"]))
 
     @r.post("/api/v1/scenes/{scene_id}/run")
     async def scenes_run(request):
-        token = hub.share.require(request)
-        return web.json_response(await hub.scenes.run(token, request.match_info["scene_id"]))
+        token = hub.share.require(request, "control")
+        scene_id = request.match_info["scene_id"]
+        result = await hub.scenes.run(token, scene_id)
+        name = next((s["name"] for s in hub.scenes.scenes if s["id"] == scene_id), scene_id)
+        failed = sum(1 for item in result.get("results") or [] if not item.get("ok"))
+        hub.activity.log("scene", f"Ran scene {name}" + (f", {failed} actions failed" if failed else ""),
+                         ok=not failed, via=f"API key {token['name']}")
+        return web.json_response(result)
 
     @r.post("/api/local/save")
     async def local_save(request):
@@ -869,7 +1262,12 @@ def routes(hub: Hub):
 
     @r.delete("/api/sonoff/devices/{ha_device_id}")
     async def sonoff_remove(request):
-        await hub.sonoff.remove(request.match_info["ha_device_id"])
+        ha_device_id = request.match_info["ha_device_id"]
+        key = next((row["key"] for row in hub._rows or [] if row.get("ha_device_id") == ha_device_id
+                    and row["key"].startswith("sonoff:")), None)
+        if key:
+            return web.json_response(await hub.remove_device(key))
+        await hub.sonoff.remove(ha_device_id)
         hub.share.invalidate()
         return web.json_response({"ok": True})
 
@@ -938,6 +1336,7 @@ async def create_app():
         app["ha_task"] = asyncio.create_task(hub.ha.run_forever())
         app["tuya_task"] = asyncio.create_task(hub.cloud.restore())
         app["hotspot_task"] = asyncio.create_task(hub.hotspot.ensure())
+        app["watch_task"] = asyncio.create_task(hub.watch())
         await hub.local.start()
         await hub.ir.start()
 
@@ -945,6 +1344,7 @@ async def create_app():
         hub.ir.stop()
         await asyncio.to_thread(hub.local.stop)
         app["ha_task"].cancel()
+        app["watch_task"].cancel()
         await session.close()
 
     app.on_startup.append(on_startup)

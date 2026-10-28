@@ -1,10 +1,12 @@
-import { RefreshCw, Settings as SettingsIcon } from "lucide-react"
-import { useEffect, useState } from "react"
+import { History, ListChecks, RefreshCw, Settings as SettingsIcon } from "lucide-react"
+import { useEffect, useState, type ReactNode } from "react"
 import { api } from "./api"
-import { cx, sourceColor, timeAgo, usePoll } from "./lib"
+import { cx, sourceColor, timeAgo, usePoll, type StatusFilter } from "./lib"
+import ActivityTab from "./tabs/ActivityTab"
 import AllDevices from "./tabs/AllDevices"
 import NetworkTab from "./tabs/NetworkTab"
 import SettingsTab from "./tabs/SettingsTab"
+import SetupTab from "./tabs/SetupTab"
 import SonoffTab from "./tabs/SonoffTab"
 import TuyaTab from "./tabs/TuyaTab"
 import Z2mTab from "./tabs/Z2mTab"
@@ -99,7 +101,13 @@ function ports(status: Status | null): Port[] {
   ]
 }
 
-const TABS: Tab[] = ["all", "tuya", "tuya_local", "z2m", "zha", "sonoff", "network", "settings"]
+const TABS: Tab[] = ["all", "tuya", "tuya_local", "z2m", "zha", "sonoff", "network", "setup", "activity", "settings"]
+
+const TOOLS: { tab: Tab; label: string; icon: ReactNode }[] = [
+  { tab: "setup", label: "Setup", icon: <ListChecks className="size-5" /> },
+  { tab: "activity", label: "Activity", icon: <History className="size-5" /> },
+  { tab: "settings", label: "Settings", icon: <SettingsIcon className="size-5" /> },
+]
 
 function initialTab(): Tab {
   const hash = window.location.hash.replace("#", "") as Tab
@@ -108,6 +116,7 @@ function initialTab(): Tab {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(initialTab)
+  const [allStatus, setAllStatus] = useState<StatusFilter>("all")
   const status = usePoll(api.status, 15000)
 
   useEffect(() => {
@@ -120,7 +129,10 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash)
   }, [])
 
-  const go = (next: Tab) => setTab(next)
+  const go = (next: Tab, filter: StatusFilter = "all") => {
+    setAllStatus(filter)
+    setTab(next)
+  }
   const refreshStatus = () => void status.reload()
 
   return (
@@ -182,20 +194,25 @@ export default function App() {
             </button>
           )
         })}
-        <button
-          role="tab"
-          aria-selected={tab === "settings"}
-          onClick={() => go("settings")}
-          className={cx(
-            "sticky right-0 flex w-14 shrink-0 items-center justify-center border-l border-line text-muted hover:text-ink",
-            tab === "settings" ? "bg-card text-ink" : "bg-sunk",
-          )}
-          title="Settings"
-          aria-label="Settings"
-        >
-          <SettingsIcon className="size-5" />
-          {tab === "settings" && <span className="absolute inset-x-0 bottom-0 h-[3px] bg-ink" />}
-        </button>
+        <div className="sticky right-0 flex shrink-0 border-l border-line bg-sunk">
+          {TOOLS.map((tool) => (
+            <button
+              key={tool.tab}
+              role="tab"
+              aria-selected={tab === tool.tab}
+              onClick={() => go(tool.tab)}
+              className={cx(
+                "relative flex w-12 items-center justify-center text-muted hover:text-ink",
+                tab === tool.tab ? "bg-card text-ink" : "bg-sunk",
+              )}
+              title={tool.label}
+              aria-label={tool.label}
+            >
+              {tool.icon}
+              {tab === tool.tab && <span className="absolute inset-x-0 bottom-0 h-[3px] bg-ink" />}
+            </button>
+          ))}
+        </div>
       </nav>
 
       {status.error && (
@@ -205,7 +222,7 @@ export default function App() {
       )}
 
       <main className="mt-5 flex-1">
-        {tab === "all" && <AllDevices onOpen={go} />}
+        {tab === "all" && <AllDevices key={allStatus} onOpen={(next) => go(next)} initialStatus={allStatus} />}
         {(tab === "tuya" || tab === "tuya_local") && (
           <TuyaTab key={tab} focus={tab === "tuya_local" ? "local" : "all"} onChanged={refreshStatus} />
         )}
@@ -214,6 +231,8 @@ export default function App() {
         {tab === "sonoff" && <SonoffTab onChanged={refreshStatus} />}
         {tab === "network" && <NetworkTab onChanged={refreshStatus} />}
         {tab === "settings" && <SettingsTab status={status.data} onChanged={refreshStatus} />}
+        {tab === "setup" && <SetupTab onOpen={go} />}
+        {tab === "activity" && <ActivityTab />}
       </main>
     </div>
   )

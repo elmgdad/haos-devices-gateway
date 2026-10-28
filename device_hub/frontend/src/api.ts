@@ -1,5 +1,12 @@
 import type {
+  ActivityEntry,
   AddStart,
+  BulkResult,
+  Command,
+  ControlDevice,
+  DeviceDetail,
+  SetupItem,
+  ShareScope,
   Area,
   HotspotStatus,
   IrRemote,
@@ -46,11 +53,23 @@ export const api = {
   areas: () => get<Area[]>("/areas"),
   createArea: (name: string) => post<Area>("/areas", { name }),
   share: () => get<ShareView>("/share"),
-  createShare: (name: string, device_ids: string[]) => post<ShareToken>("/share", { name, device_ids }),
+  createShare: (name: string, device_ids: string[], scope: ShareScope, expires_in_days: number | null) =>
+    post<ShareToken>("/share", { name, device_ids, scope, expires_in_days }),
   revokeShare: (id: string) => del(`/share/${id}`),
   updateHaDevice: (id: string, changes: { name_by_user?: string; area_id?: string | null }) =>
     post(`/ha/devices/${id}`, changes),
   allDevices: () => get<{ devices: UnifiedDevice[]; areas: Record<string, string> }>("/devices/all"),
+  control: (key: string) => get<ControlDevice | null>(`/control/${encodeURIComponent(key)}`),
+  sendControl: (key: string, commands: Command[]) => post<ControlDevice>(`/control/${encodeURIComponent(key)}`, { commands }),
+  deviceDetail: (key: string) => get<DeviceDetail>(`/devices/${encodeURIComponent(key)}/detail`),
+  updateDevice: (key: string, changes: { name?: string; area_id?: string | null }) =>
+    post(`/devices/${encodeURIComponent(key)}`, changes),
+  removeDevice: (key: string) => del(`/devices/${encodeURIComponent(key)}`),
+  bulk: (keys: string[], action: "area" | "on" | "off" | "remove", area_id?: string | null) =>
+    post<{ results: BulkResult[] }>("/devices/bulk", { keys, action, area_id }),
+  activity: (kind = "") => get<{ activity: ActivityEntry[] }>(`/activity${kind ? `?kind=${kind}` : ""}`),
+  clearActivity: () => del("/activity"),
+  setup: () => get<{ items: SetupItem[] }>("/setup"),
 
   tuya: (refresh = false) => get<TuyaView>(`/tuya${refresh ? "?refresh=1" : ""}`),
   tuyaLogin: (access_id: string, secret: string, region: string) =>

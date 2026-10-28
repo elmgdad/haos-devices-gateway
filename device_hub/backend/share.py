@@ -4,13 +4,14 @@ The panel API stays inside Home Assistant. This one listens on the Pi
 (port 8765) and answers only for the devices named on the key.
 """
 
-import html
+import asyncio
 import secrets
 import time
 
 from aiohttp import web
 
-from . import store
+from . import __version__, openapi, store
+from .activity import say
 from .ir import _slug
 
 STORE = "share"
@@ -21,6 +22,14 @@ WRITABLE = {
 }
 TRUTHY = {True, 1, "1", "true", "True", "on", "ON", "open", "unlock"}
 RISKY = ("reset", "factory", "limit", "calibrat", "identify", "restart", "reboot")
+# Each scope can do everything the ones before it can. Keys made before scopes existed are "control".
+SCOPES = ("read", "control", "manage")
+SCOPE_ABOUT = {
+    "read": "See devices, areas, scenes, activity and live updates.",
+    "control": "Also send commands and save, run or delete scenes.",
+    "manage": "Also rename devices, move them between areas and remove them.",
+}
+PANEL = {"id": "panel", "name": "panel", "device_ids": ["*"], "scope": "manage"}
 
 
 class Shares:
@@ -32,97 +41,27 @@ class Shares:
         self._catalog_at = 0.0
         self._index = None
         self._index_at = 0.0
+        self._lock = asyncio.Lock()
+        self._rebuilding = None
 
     def public(self, base_url):
+        base = base_url.rstrip("/") + "/api/v1"
         return {
             "name": "Device Hub API",
-            "base_url": base_url.rstrip("/") + "/api/v1",
+            "version": __version__,
+            "base_url": base,
+            "openapi": base + "/openapi.json",
             "auth": "Authorization: Bearer <key>",
-            "endpoints": [
-                {
-                    "method": "GET",
-                    "path": "/api/v1/devices",
-                    "about": "Devices this key can see, with each control and its current value.",
-                },
-                {
-                    "method": "GET",
-                    "path": "/api/v1/devices/{id}",
-                    "about": "One device. The id is the value returned in the list, such as tuya:abc or z2m:0x00124b.",
-                },
-                {
-                    "method": "POST",
-                    "path": "/api/v1/devices/{id}/commands",
-                    "about": "Change one or more controls. code is the control code or the Home Assistant entity id.",
-                    "body": {"commands": [{"code": "switch_1", "value": True}]},
-                },
-                {
-                    "method": "GET",
-                    "path": "/api/v1/scenes",
-                    "about": "Scenes saved for this key. A scene can mix Sonoff, Zigbee and Tuya.",
-                },
-                {
-                    "method": "POST",
-                    "path": "/api/v1/scenes",
-                    "about": "Save a scene. Each action is a device id, a control code, and the value to send.",
-                    "body": {"name": "Leaving", "actions": [{"device_id": "sonoff:abc", "code": "switch.kitchen", "value": False}]},
-                },
-                {
-                    "method": "POST",
-                    "path": "/api/v1/scenes/{id}/run",
-                    "about": "Send every action in the scene. One device failing does not skip the others.",
-                },
-                {
-                    "method": "DELETE",
-                    "path": "/api/v1/scenes/{id}",
-                    "about": "Remove a scene.",
-                },
-            ],
-            "values": {
-                "switch, light, fan, lock": "true turns it on or unlocks it. false turns it off or locks it.",
-                "number": "A number inside the control's range.",
-                "select": "One of the options, as text.",
-                "cover": "open, close, stop, or a position from 0 to 100.",
-                "button": "Any value presses it. IR remote keys such as Power or Volume+ are buttons.",
-                "air conditioner": "power true or false, mode cool heat auto fan_only dry, temp 16 to 30, fan auto low medium high.",
-                "climate": "A number sets the temperature. Text such as heat or off sets the mode.",
-                "garage": "The Smart RF Copier control named Garage is button 2. true is On and false is Off. Each change presses the button.",
-            },
+            "scopes": SCOPE_ABOUT,
+            "endpoints": openapi.endpoints(),
+            "values": openapi.VALUES,
         }
 
     def describe_html(self, base_url):
-        docs = self.public(base_url)
-        rows = []
-        for item in docs["endpoints"]:
-            body = ""
-            if item.get("body"):
-                body = "<pre>{\"commands\": [{\"code\": \"switch_1\", \"value\": true}]}</pre>"
-            rows.append(
-                f"<h2><code>{html.escape(item['method'])} {html.escape(item['path'])}</code></h2>"
-                f"<p>{html.escape(item['about'])}</p>{body}"
-            )
-        values = "".join(f"<li><b>{html.escape(k)}</b> {html.escape(v)}</li>" for k, v in docs["values"].items())
-        base = html.escape(docs["base_url"])
-        return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Device Hub API</title>
-<style>
-body {{ margin: 0; background: #111; color: #eee; font: 16px/1.5 ui-sans-serif, system-ui, sans-serif; }}
-main {{ max-width: 740px; margin: 0 auto; padding: 32px 20px 64px; }}
-code, pre {{ font-family: ui-monospace, monospace; }}
-pre, code {{ background: #1c1c1c; }}
-code {{ padding: 0 4px; }}
-pre {{ padding: 12px; overflow: auto; }}
-h1 {{ font-size: 28px; letter-spacing: 0.04em; }}
-a {{ color: #8ec8ff; }}
-</style></head><body><main>
-<h1>Device Hub API</h1>
-<p>Control devices you shared from the Device Hub panel. Create a key in Device Hub, Settings, Share.</p>
-<p>Base URL <code>{base}</code></p>
-<p>Send <code>Authorization: Bearer dh_…</code> on every request except this page.</p>
-<pre>curl -H "Authorization: Bearer dh_your_key" {base}/devices</pre>
-{''.join(rows)}
-<h2>Values</h2><ul>{values}</ul>
-</main></body></html>"""
+        return openapi.page(base_url, __version__)
+
+    def openapi(self, base_url):
+        return openapi.spec(base_url, __version__)
 
     def panel(self, base_url):
         return {
@@ -136,12 +75,16 @@ a {{ color: #8ec8ff; }}
                     "device_ids": item["device_ids"],
                     "created_at": item["created_at"],
                     "last_used": item.get("last_used"),
+                    "scope": _scope(item),
+                    "expires_at": item.get("expires_at"),
+                    "expired": _expired(item),
                 }
                 for item in self.tokens
             ],
+            "scopes": [{"id": scope, "about": SCOPE_ABOUT[scope]} for scope in SCOPES],
         }
 
-    def create(self, name, device_ids):
+    def create(self, name, device_ids, scope="control", expires_in_days=None):
         name = (name or "").strip()
         if not name:
             raise RuntimeError("Name this key so you can tell it apart later.")
@@ -152,6 +95,14 @@ a {{ color: #8ec8ff; }}
                 chosen.append(device_id)
         if not chosen:
             raise RuntimeError("Pick at least one device to share.")
+        if scope not in SCOPES:
+            raise RuntimeError("Choose what the key may do: read, control or manage.")
+        expires_at = None
+        if expires_in_days not in (None, "", 0, "0"):
+            days = _number(expires_in_days)
+            if not days or days < 0:
+                raise RuntimeError("The key must last at least a day.")
+            expires_at = time.time() + days * 86400
         item = {
             "id": secrets.token_hex(4),
             "name": name[:60],
@@ -159,10 +110,20 @@ a {{ color: #8ec8ff; }}
             "device_ids": chosen,
             "created_at": time.time(),
             "last_used": None,
+            "scope": scope,
+            "expires_at": expires_at,
         }
         self.tokens.append(item)
         self._persist()
-        return {"id": item["id"], "name": item["name"], "token": item["token"], "device_ids": item["device_ids"]}
+        self.hub.activity.log("key", f"Created API key {item['name']} ({scope})")
+        return {
+            "id": item["id"],
+            "name": item["name"],
+            "token": item["token"],
+            "device_ids": item["device_ids"],
+            "scope": scope,
+            "expires_at": expires_at,
+        }
 
     def reset(self):
         self.tokens = []
@@ -170,11 +131,12 @@ a {{ color: #8ec8ff; }}
         self.invalidate()
 
     def revoke(self, token_id):
-        before = len(self.tokens)
-        self.tokens = [item for item in self.tokens if item["id"] != token_id]
-        if len(self.tokens) == before:
+        gone = next((item for item in self.tokens if item["id"] == token_id), None)
+        if not gone:
             raise RuntimeError("That key is already gone.")
+        self.tokens = [item for item in self.tokens if item["id"] != token_id]
         self._persist()
+        self.hub.activity.log("key", f"Revoked API key {gone['name']}")
         return {"ok": True}
 
     def authenticate(self, header):
@@ -185,6 +147,11 @@ a {{ color: #8ec8ff; }}
             return None
         for item in self.tokens:
             if secrets.compare_digest(item["token"], raw):
+                if _expired(item):
+                    raise web.HTTPUnauthorized(
+                        text='{"error": "This key has expired. Create a new one in Device Hub, Settings, Share."}',
+                        content_type="application/json",
+                    )
                 now = time.time()
                 if not item.get("last_used") or now - item["last_used"] > 60:
                     item["last_used"] = now
@@ -194,11 +161,20 @@ a {{ color: #8ec8ff; }}
                 return item
         return None
 
-    def require(self, request):
-        found = self.authenticate(request.headers.get("Authorization", ""))
+    def require(self, request, need="read", allow_query=False):
+        """The key on the request, if it may do `need`. EventSource cannot send headers, so events also take ?key=."""
+        header = request.headers.get("Authorization", "")
+        if not header and allow_query and request.query.get("key"):
+            header = "Bearer " + request.query["key"]
+        found = self.authenticate(header)
         if not found:
             raise web.HTTPUnauthorized(
                 text='{"error": "Send Authorization: Bearer and a key from Device Hub."}',
+                content_type="application/json",
+            )
+        if SCOPES.index(_scope(found)) < SCOPES.index(need):
+            raise web.HTTPForbidden(
+                text=f'{{"error": "This key can only {_scope(found)}. This needs a {need} key."}}',
                 content_type="application/json",
             )
         return found
@@ -219,6 +195,18 @@ a {{ color: #8ec8ff; }}
         device = await self.device_for(token, device_id)
         if not commands:
             raise RuntimeError("Choose a command to send.")
+        what = _describe(device, commands)
+        try:
+            await self._send(device, commands)
+        except Exception as exc:
+            self.hub.activity.log("command", f"{what}: {exc}", device_id=device["id"], device=device["name"],
+                                  ok=False, via=_via(token))
+            raise
+        self.hub.activity.log("command", what, device_id=device["id"], device=device["name"], via=_via(token))
+        await self.refresh_one(device["id"])
+        return await self.device_for(token, device_id)
+
+    async def _send(self, device, commands):
         bare = _bare(device["id"])
         remote = self.hub.ir.knows(bare)
         tuya_id = device["id"].removeprefix("tuya:") if device["id"].startswith("tuya:") else None
@@ -226,7 +214,7 @@ a {{ color: #8ec8ff; }}
             code = str((command or {}).get("code") or "").strip()
             control = next((item for item in device["controls"] if item["code"] == code or item.get("entity_id") == code), None)
             if not control or not control["writable"]:
-                raise RuntimeError(f"{code or 'That control'} cannot be changed with this key.")
+                raise RuntimeError(f"{code or 'That control'} is not a control that can be changed on {device['name']}.")
             if remote:
                 await self.hub.ir.command(bare, control["code"], command.get("value"))
                 continue
@@ -247,52 +235,93 @@ a {{ color: #8ec8ff; }}
                     raise RuntimeError("The local link to this device is down.")
                 await self.hub.local.command(tuya_id, [{"code": control["code"], "value": command.get("value")}])
             else:
-                await self._ha_command(control, command.get("value"))
-        self.invalidate()
-        return await self.device_for(token, device_id)
+                await self._ha_command(control, command.get("value"), command)
 
     async def catalog(self):
-        now = time.monotonic()
-        if self._catalog is not None and now - self._catalog_at < 8:
+        """Every device with its controls. A catalog under 2 minutes old is returned at once and rebuilt behind."""
+        age = time.monotonic() - self._catalog_at
+        if self._catalog is not None and age < 8:
             return self._catalog
-        rows = (await self.hub.all_devices())["devices"]
+        if self._catalog is not None and age < 120:
+            if self._rebuilding is None or self._rebuilding.done():
+                self._rebuilding = asyncio.create_task(self._rebuild())
+            return self._catalog
+        return await self._rebuild()
+
+    async def _rebuild(self):
+        async with self._lock:
+            started = time.monotonic()
+            if self._catalog is not None and started - self._catalog_at < 8:
+                return self._catalog
+            rows = (await self.hub.all_devices())["devices"]
+            index = await self.ha_index()
+            found = {}
+            for row in rows:
+                if not row["key"].startswith("lan:"):
+                    found[row["key"]] = await self._local_controls(row, index)
+            # Cloud-only Tuya devices cost a request each, so ask a few at a time instead of one by one.
+            gate = asyncio.Semaphore(4)
+
+            async def from_cloud(key):
+                async with gate:
+                    found[key] = await self._cloud_controls(key)
+
+            await asyncio.gather(*(from_cloud(key) for key, controls in found.items() if not controls and key.startswith("tuya:")))
+            items = [item for item in (self._item(row, found.get(row["key"]) or []) for row in rows) if item]
+            items.sort(key=lambda item: item["name"].lower())
+            self._catalog = items
+            self._catalog_at = started
+            self.hub.events.map_entities(items)
+            return items
+
+    async def refresh_one(self, device_id):
+        """Rebuild one device after a command, so the answer shows its new state without rebuilding them all."""
+        row = next((r for r in self.hub._rows or [] if r["key"] == device_id), None)
+        if row is None or self._catalog is None:
+            self.invalidate()
+            return
+        self._index_at = 0
         index = await self.ha_index()
-        items = []
-        for row in rows:
-            if row["key"].startswith("lan:"):
-                continue
-            garage = await self._garage(row)
-            controls = [garage] if garage else self._controls(row, index)
-            if not controls and row["key"].startswith("tuya:"):
-                try:
-                    controls = await self.hub.cloud.cloud_controls(row["key"].removeprefix("tuya:"))
-                except Exception:
-                    controls = []
-            for control in controls:
-                if any(word in control["name"].lower() for word in RISKY):
-                    control["primary"] = False
-            if not controls:
-                continue
-            presence = _as_presence(controls)
-            role, detail = _role(self.hub, row, controls)
-            if presence and role is None:
-                role = "presence"
-            items.append({
-                "id": row["key"],
-                "name": row["name"],
-                "area": row.get("area"),
-                "area_id": row.get("area_id"),
-                "online": row.get("online"),
-                "source": row["sources"][0],
-                "role": role,
-                "detail": detail,
-                "ha_device_id": row.get("ha_device_id"),
-                "controls": controls,
-            })
-        items.sort(key=lambda item: item["name"].lower())
-        self._catalog = items
-        self._catalog_at = now
-        return items
+        if device_id.startswith("tuya:"):
+            self.hub.cloud._control_cache.pop(device_id.removeprefix("tuya:"), None)
+        controls = await self._local_controls(row, index)
+        if not controls and device_id.startswith("tuya:"):
+            controls = await self._cloud_controls(device_id)
+        item = self._item(row, controls)
+        self._catalog = [item if old["id"] == device_id else old for old in self._catalog if item or old["id"] != device_id]
+
+    async def _local_controls(self, row, index):
+        garage = await self._garage(row)
+        return [garage] if garage else self._controls(row, index)
+
+    async def _cloud_controls(self, key):
+        try:
+            return await self.hub.cloud.cloud_controls(key.removeprefix("tuya:"))
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _item(self, row, controls):
+        if not controls:
+            return None
+        for control in controls:
+            if any(word in control["name"].lower() for word in RISKY):
+                control["primary"] = False
+        presence = _as_presence(controls)
+        role, detail = _role(self.hub, row, controls)
+        if presence and role is None:
+            role = "presence"
+        return {
+            "id": row["key"],
+            "name": row["name"],
+            "area": row.get("area"),
+            "area_id": row.get("area_id"),
+            "online": row.get("online"),
+            "source": row["sources"][0],
+            "role": role,
+            "detail": detail,
+            "ha_device_id": row.get("ha_device_id"),
+            "controls": controls,
+        }
 
     def invalidate(self):
         self._catalog_at = 0
@@ -424,13 +453,19 @@ a {{ color: #8ec8ff; }}
             })
         return controls
 
-    async def _ha_command(self, control, value):
+    async def _ha_command(self, control, value, command=None):
         entity_id = control.get("entity_id")
         domain = (entity_id or "").split(".", 1)[0]
         if not entity_id or domain not in WRITABLE:
             raise RuntimeError(f"{control['name']} is only available inside Home Assistant.")
         data = {"entity_id": entity_id}
-        if domain in ("switch", "light", "fan", "input_boolean", "humidifier", "siren"):
+        brightness = _number((command or {}).get("brightness"))
+        if domain == "light" and brightness is not None:
+            if brightness <= 0:
+                service = "turn_off"
+            else:
+                service, data = "turn_on", {**data, "brightness_pct": max(1, min(100, round(brightness)))}
+        elif domain in ("switch", "light", "fan", "input_boolean", "humidifier", "siren"):
             service = "turn_on" if value in TRUTHY else "turn_off"
         elif domain == "valve":
             if isinstance(value, (int, float)) or str(value).replace(".", "", 1).isdigit():
@@ -469,6 +504,34 @@ a {{ color: #8ec8ff; }}
 
 def _bare(device_id):
     return device_id.split(":", 1)[1] if ":" in device_id else device_id
+
+
+def _scope(token):
+    return token.get("scope") if token.get("scope") in SCOPES else "control"
+
+
+def _expired(token):
+    return bool(token.get("expires_at")) and time.time() > token["expires_at"]
+
+
+def _via(token):
+    return "panel" if token is PANEL else f"API key {token['name']}"
+
+
+def _describe(device, commands):
+    """One line for the activity log, such as: Kitchen plug: Switch on."""
+    parts = []
+    for command in commands:
+        code = str((command or {}).get("code") or "")
+        control = next((c for c in device["controls"] if c["code"] == code or c.get("entity_id") == code), None)
+        name = control["name"] if control else code
+        if (command or {}).get("brightness") is not None:
+            parts.append(f"{name} brightness {command['brightness']}%")
+        elif control and control.get("type") == "button":
+            parts.append(f"{name} pressed")
+        else:
+            parts.append(f"{name} {say((command or {}).get('value'))}")
+    return f"{device['name']}: " + ", ".join(parts)
 
 
 def _control_label(control):
@@ -534,6 +597,25 @@ def _point_limits(point):
 
 
 def _entity_limits(domain, attributes):
+    if domain == "light":
+        modes = set(attributes.get("supported_color_modes") or [])
+        if modes - {"onoff"}:
+            level = attributes.get("brightness")
+            return {"dimmable": True, "brightness": round(level * 100 / 255) if isinstance(level, (int, float)) else 0}
+        return {}
+    if domain == "climate":
+        limits = {key: attributes[key] for key in ("min_temp", "max_temp") if isinstance(attributes.get(key), (int, float))}
+        return {
+            "options": [str(item) for item in attributes.get("hvac_modes") or []],
+            **({"min": limits["min_temp"]} if "min_temp" in limits else {}),
+            **({"max": limits["max_temp"]} if "max_temp" in limits else {}),
+            "step": attributes.get("target_temp_step") or 0.5,
+            "target": attributes.get("temperature"),
+            "current": attributes.get("current_temperature"),
+            "unit": "°",
+        }
+    if domain == "cover" and isinstance(attributes.get("current_position"), (int, float)):
+        return {"position": attributes["current_position"]}
     if domain in ("select", "input_select"):
         return {"options": [str(item) for item in attributes.get("options") or []]}
     if domain in ("number", "input_number"):

@@ -36,6 +36,8 @@ REGIONS = [
 ]
 REGION_IDS = {r["id"] for r in REGIONS}
 CACHE_SECONDS = 120
+# A device the cloud project may not read (permission deny) stays that way; ask again after this long.
+DENIED_SECONDS = 600
 
 
 class TuyaCloud:
@@ -48,6 +50,7 @@ class TuyaCloud:
         self._creds = _initial_creds()
         self._shadow_cache = {}
         self._control_cache = {}
+        self._denied = {}
 
     @property
     def connected(self):
@@ -168,9 +171,12 @@ class TuyaCloud:
         cached = self._control_cache.get(device_id)
         if cached and now - cached[0] < 15:
             return cached[1]
+        if now < self._denied.get(device_id, 0):
+            return []
         try:
             status, functions, _blocked = await asyncio.to_thread(_read_control, self._cloud, device_id)
         except Exception:
+            self._denied[device_id] = now + DENIED_SECONDS
             return []
         by_code = {item["code"]: item for item in functions if item.get("code")}
         states = {item["code"]: item.get("value") for item in status if item.get("code")}
@@ -219,6 +225,7 @@ class TuyaCloud:
         self.devices = [d for d in self.devices if d["id"] != device_id]
         self._shadow_cache.pop(device_id, None)
         self._control_cache.pop(device_id, None)
+        self._denied.pop(device_id, None)
 
     def _require(self):
         if not self.connected:

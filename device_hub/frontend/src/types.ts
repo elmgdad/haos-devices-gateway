@@ -1,5 +1,5 @@
 export type Source = "tuya" | "tuya_local" | "z2m" | "zha" | "sonoff" | "lan"
-export type Tab = "all" | Source | "network" | "settings"
+export type Tab = "all" | Source | "network" | "settings" | "setup" | "activity"
 
 export interface Status {
   mode: "addon" | "dev"
@@ -171,6 +171,8 @@ export interface IrView {
   cloud_ir_help: string | null
 }
 
+export type ShareScope = "read" | "control" | "manage"
+
 export interface ShareToken {
   id: string
   name: string
@@ -178,13 +180,19 @@ export interface ShareToken {
   device_ids: string[]
   created_at: number
   last_used: number | null
+  scope: ShareScope
+  expires_at: number | null
+  expired: boolean
 }
 
 export interface ShareDocs {
   name: string
+  version: string
   base_url: string
+  openapi: string
   auth: string
-  endpoints: { method: string; path: string; about: string; body?: { commands: { code: string; value: boolean }[] } }[]
+  scopes: Record<ShareScope, string>
+  endpoints: { method: string; path: string; about: string; scope: ShareScope; body?: unknown }[]
   values: Record<string, string>
 }
 
@@ -200,7 +208,99 @@ export interface ShareView {
   base_url: string
   docs: ShareDocs
   tokens: ShareToken[]
+  scopes: { id: ShareScope; about: string }[]
   devices: ShareDeviceChoice[]
+}
+
+export interface Control {
+  code: string
+  name: string
+  type: string
+  entity_id: string | null
+  state: boolean | number | string | null
+  writable: boolean
+  primary: boolean
+  options?: string[]
+  min?: number
+  max?: number
+  step?: number
+  scale?: number
+  unit?: string
+  dimmable?: boolean
+  brightness?: number
+  target?: number | null
+  current?: number | null
+  position?: number
+}
+
+export interface ControlDevice {
+  id: string
+  name: string
+  area: string | null
+  area_id: string | null
+  online: boolean | null
+  source: Source
+  role: string | null
+  detail: string | null
+  ha_device_id: string | null
+  controls: Control[]
+}
+
+export interface Command {
+  code: string
+  value?: boolean | number | string | null
+  brightness?: number
+}
+
+export type ActivityKind = "command" | "scene" | "remove" | "change" | "offline" | "online" | "key" | "error"
+
+export interface ActivityEntry {
+  id: string
+  at: number
+  kind: ActivityKind
+  text: string
+  device_id: string | null
+  device: string | null
+  ok: boolean
+  via: string
+}
+
+export interface DeviceDetail {
+  device: UnifiedDevice
+  ha: {
+    id: string
+    name: string | null
+    name_by_user: string | null
+    manufacturer: string | null
+    model: string | null
+    model_id: string | null
+    sw_version: string | null
+    hw_version: string | null
+    serial_number: string | null
+    configuration_url: string | null
+    via: string | null
+    integrations: string[]
+    disabled: boolean
+  } | null
+  entities: { entity_id: string; name: string; domain: string; state: string | null; unit: string | null; category: string | null }[]
+  activity: ActivityEntry[]
+  removable: boolean
+}
+
+export interface BulkResult {
+  key: string
+  name: string
+  ok: boolean
+  error?: string
+}
+
+export interface SetupItem {
+  id: string
+  title: string
+  required: boolean
+  state: "ok" | "todo" | "warn" | "optional"
+  detail: string
+  action: { label: string; tab?: Tab; ha?: string; url?: string; status?: "offline" } | null
 }
 
 export interface LocalSaveResult {

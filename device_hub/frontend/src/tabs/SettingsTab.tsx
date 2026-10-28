@@ -1,7 +1,8 @@
+import { ExternalLink } from "lucide-react"
 import { useEffect, useState } from "react"
 import { api } from "../api"
-import { copyText, cx, errorText, usePoll } from "../lib"
-import type { Status } from "../types"
+import { clockTime, copyText, cx, errorText, timeAgo, usePoll } from "../lib"
+import type { ShareScope, Status } from "../types"
 import { Badge, Button, Field, Input, Notice, Panel, Select, useFeedback } from "../ui"
 
 export default function SettingsTab({ status, onChanged }: { status: Status | null; onChanged: () => void }) {
@@ -186,6 +187,8 @@ function SharePanel() {
   const [name, setName] = useState("")
   const [picked, setPicked] = useState<Set<string>>(new Set())
   const [everything, setEverything] = useState(false)
+  const [scope, setScope] = useState<ShareScope>("control")
+  const [days, setDays] = useState("")
   const [busy, setBusy] = useState<string | null>(null)
   const data = share.data
   const docs = data?.docs
@@ -201,7 +204,7 @@ function SharePanel() {
   const create = async () => {
     setBusy("create")
     try {
-      const created = await api.createShare(name, everything ? ["*"] : [...picked])
+      const created = await api.createShare(name, everything ? ["*"] : [...picked], scope, days ? Number(days) : null)
       setName("")
       setPicked(new Set())
       setEverything(false)
@@ -251,6 +254,25 @@ function SharePanel() {
           <Field label="Key name" hint="For example, the phone or app you are handing it to.">
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Living room display" />
           </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="What it may do" hint={data?.scopes.find((s) => s.id === scope)?.about}>
+              <Select value={scope} onChange={(e) => setScope(e.target.value as ShareScope)}>
+                <option value="read">Read only</option>
+                <option value="control">Control</option>
+                <option value="manage">Manage</option>
+              </Select>
+            </Field>
+            <Field label="Expires" hint="An expired key stops working. Revoke it any time.">
+              <Select value={days} onChange={(e) => setDays(e.target.value)}>
+                <option value="">Never</option>
+                <option value="1">After 1 day</option>
+                <option value="7">After 7 days</option>
+                <option value="30">After 30 days</option>
+                <option value="90">After 90 days</option>
+                <option value="365">After a year</option>
+              </Select>
+            </Field>
+          </div>
           <div>
             <p className="mb-1 text-sm font-medium">Devices</p>
             <label className="mb-2 flex items-center gap-2 text-sm">
@@ -276,7 +298,11 @@ function SharePanel() {
               {data!.tokens.map((token) => (
                 <li key={token.id} className="space-y-1">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium">{token.name}</span>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium">{token.name}</span>
+                      <Badge tone={token.scope === "manage" ? "bad" : token.scope === "control" ? "info" : "neutral"}>{token.scope}</Badge>
+                      {token.expired && <Badge tone="bad">expired</Badge>}
+                    </span>
                     <Button variant="danger" className="h-8" busy={busy === token.id} onClick={() => revoke(token.id, token.name)}>
                       Revoke
                     </Button>
@@ -286,6 +312,10 @@ function SharePanel() {
                   </button>
                   <p className="text-xs text-muted">
                     {token.device_ids.includes("*") ? "All devices" : `${token.device_ids.length} devices`}
+                    {" · "}
+                    {token.expires_at ? `${token.expired ? "expired" : "expires"} ${clockTime(token.expires_at)}` : "never expires"}
+                    {" · "}
+                    {token.last_used ? `last used ${timeAgo(token.last_used)}` : "not used yet"}
                   </p>
                 </li>
               ))}
@@ -297,15 +327,27 @@ function SharePanel() {
           {docs ? (
             <>
               <p className="text-muted">
-                Send <span className="font-mono text-xs">{docs.auth}</span> on every request. Opening the base URL in a browser shows this page too.
+                Send <span className="font-mono text-xs">{docs.auth}</span> on every request. Version {docs.version}.
               </p>
+              <div className="flex flex-wrap gap-2">
+                <Button icon={<ExternalLink className="size-4" />} onClick={() => window.open(docs.base_url, "_blank", "noopener")}>
+                  API docs
+                </Button>
+                <Button icon={<ExternalLink className="size-4" />} onClick={() => window.open(docs.openapi, "_blank", "noopener")}>
+                  OpenAPI spec
+                </Button>
+              </div>
               <pre className="overflow-x-auto rounded-md bg-sunk p-3 font-mono text-xs">{`curl -H "Authorization: Bearer dh_your_key" \\\n  ${docs.base_url}/devices`}</pre>
               {docs.endpoints.map((item) => (
                 <div key={item.method + item.path}>
-                  <p className="font-mono text-xs">
+                  <p className="flex flex-wrap items-center gap-2 font-mono text-xs">
                     {item.method} {item.path}
+                    <Badge>{item.scope}</Badge>
                   </p>
                   <p className="text-muted">{item.about}</p>
+                  {item.body !== undefined && (
+                    <pre className="mt-1 overflow-x-auto rounded-md bg-sunk p-2 font-mono text-[11px]">{JSON.stringify(item.body)}</pre>
+                  )}
                 </div>
               ))}
               <p className="font-medium">Values</p>
@@ -316,9 +358,7 @@ function SharePanel() {
                   </li>
                 ))}
               </ul>
-              {docs.endpoints.some((item) => item.body) && (
-                <pre className="overflow-x-auto rounded-md bg-sunk p-3 font-mono text-xs">{`{"commands": [{"code": "switch_1", "value": true}]}`}</pre>
-              )}
+
             </>
           ) : (
             <Notice>Loading the API description.</Notice>

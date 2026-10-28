@@ -1,3 +1,9 @@
+# 0.1.27
+
+Full control from one place. Every device in All Devices opens a drawer with its controls (switches, dimmers, numbers, modes, covers, climate, IR keys), its details (rename, area, hardware, entities) and its activity, and updates live. Pick several devices to move them to an area, turn them on or off, or remove them. Setup lists what is connected and how to fix what is missing. Activity logs commands, renames, removals, API keys and devices going offline or coming back.
+
+The API has read, control and manage keys that can expire, rename and remove devices, areas, activity, live updates at /api/v1/events, and an OpenAPI document at /api/v1/openapi.json. Keys made before keep the control access they had. Device lists build in about a second instead of 15.
+
 # 0.1.26
 
 All Devices, Tuya and Sonoff filter by status: online or offline. Each device has a remove button, and with Offline picked, one button removes every offline device. Tuya devices are unbound from the Smart Life account. Sonoff devices are removed from Home Assistant; SonoffLAN adds them back on its next start while they are still in eWeLink.

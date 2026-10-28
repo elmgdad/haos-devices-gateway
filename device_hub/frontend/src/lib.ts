@@ -135,3 +135,55 @@ export async function removeEach<T>(items: T[], remove: (item: T) => Promise<unk
   }
   return failed
 }
+
+/** Live updates from the backend. Reconnects on its own; callers keep polling as a fallback. */
+export function useLiveEvents(onEvent: (kind: string, data: Record<string, unknown>) => void, enabled = true) {
+  const handler = useRef(onEvent)
+  handler.current = onEvent
+  useEffect(() => {
+    if (!enabled || typeof EventSource === "undefined") return
+    const source = new EventSource("./api/events")
+    const listen = (kind: string) => (event: MessageEvent) => {
+      try {
+        handler.current(kind, JSON.parse(event.data))
+      } catch {
+        /* a malformed event is skipped */
+      }
+    }
+    const kinds = ["state", "device", "activity"]
+    const listeners = kinds.map((kind) => [kind, listen(kind)] as const)
+    listeners.forEach(([kind, fn]) => source.addEventListener(kind, fn))
+    return () => {
+      listeners.forEach(([kind, fn]) => source.removeEventListener(kind, fn))
+      source.close()
+    }
+  }, [enabled])
+}
+
+/** What removing a device does, per system. null when there is nothing to remove. */
+export function removalEffect(key: string): string | null {
+  switch (key.split(":")[0]) {
+    case "tuya":
+      return "Tuya unbinds it from your Smart Life account. To use it again, reset it and pair it in Smart Life."
+    case "tuya_local":
+      return "Its Tuya Local entry and entities are removed from Home Assistant."
+    case "zha":
+      return "ZHA asks it to leave the network and removes it from Home Assistant."
+    case "z2m":
+      return "Zigbee2MQTT asks it to leave the network."
+    case "sonoff":
+      return "It is removed from Home Assistant. SonoffLAN adds it back on its next start while it is still in eWeLink."
+    case "ir":
+      return "Device Hub forgets this learned remote."
+    default:
+      return null
+  }
+}
+
+export function clockTime(seconds: number) {
+  const date = new Date(seconds * 1000)
+  const today = new Date().toDateString() === date.toDateString()
+  return today
+    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+}
