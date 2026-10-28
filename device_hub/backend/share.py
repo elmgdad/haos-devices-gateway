@@ -273,7 +273,10 @@ a {{ color: #8ec8ff; }}
                     control["primary"] = False
             if not controls:
                 continue
+            presence = _as_presence(controls)
             role, detail = _role(self.hub, row, controls)
+            if presence and role is None:
+                role = "presence"
             items.append({
                 "id": row["key"],
                 "name": row["name"],
@@ -466,6 +469,42 @@ a {{ color: #8ec8ff; }}
 
 def _bare(device_id):
     return device_id.split(":", 1)[1] if ":" in device_id else device_id
+
+
+def _control_label(control):
+    code = str(control.get("code") or "").lower()
+    return f"{control.get('name') or ''} {code.rsplit('.', 1)[-1]}".lower()
+
+
+def _is_presence_reading(control):
+    if control.get("writable"):
+        return False
+    label = _control_label(control)
+    if any(word in label for word in ("illuminance", "battery", "door", "tamper")):
+        return False
+    return any(word in label for word in ("presence", "occupan"))
+
+
+def _is_brightness_reading(control):
+    if control.get("writable"):
+        return False
+    label = _control_label(control)
+    unit = str(control.get("unit") or "").lower()
+    return "illuminance" in label or unit in {"lx", "lux"}
+
+
+def _as_presence(controls):
+    """Presence sensors keep presence and brightness primary. Relays and settings do not.
+
+    A door-sensor profile used to publish a timer as a battery. The readings that
+    matter are whether someone is here and how bright the room is.
+    """
+    if not any(_is_presence_reading(control) for control in controls):
+        return False
+    for control in controls:
+        if not (_is_presence_reading(control) or _is_brightness_reading(control)):
+            control["primary"] = False
+    return True
 
 
 def _role(hub, row, controls):
